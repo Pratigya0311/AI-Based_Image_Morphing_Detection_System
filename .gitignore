@@ -1,0 +1,91 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test coverage
+.coverage
+htmlcov/
+
+# MyPy
+.mypy_cache/
+.pytest_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Project specific
+data/processed/*
+data/raw/*
+data/sample/*
+!data/processed/.gitkeep
+!data/raw/.gitkeep
+!data/sample/.gitkeep
+
+# Model files (too large for Git)
+models/checkpoints/*
+models/metadata/*
+!models/checkpoints/.gitkeep
+!models/metadata/.gitkeep
+
+# Docker
+docker/*.tar
+*.log
+
+# Frontend (if using npm/node)
+frontend/node_modules/
+frontend/.next/
+frontend/dist/
+frontend/build/
+
+# Python profiling
+*.prof
