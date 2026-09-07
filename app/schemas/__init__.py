@@ -1,15 +1,14 @@
-"""
-Shared data-contract schemas
-"""
+"""Shared data-contract schemas."""
 
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
 class ImageSubmission:
-    """Schema for image submission"""
+    """Schema for an image submitted to the pipeline."""
+
     file_bytes: bytes
     filename: str
     format: Optional[str] = None
@@ -18,21 +17,23 @@ class ImageSubmission:
 
 @dataclass
 class SubmissionResponse:
-    """Schema for submission response"""
+    """Schema returned after validating an image submission."""
+
     submission_id: str
     valid: bool
     error: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
-    timestamp: str = None
-    
-    def __post_init__(self):
+    timestamp: Optional[str] = None
+
+    def __post_init__(self) -> None:
         if self.timestamp is None:
-            self.timestamp = datetime.now().isoformat()
+            self.timestamp = datetime.now(timezone.utc).isoformat()
 
 
 @dataclass
 class ValidationResult:
-    """Schema for validation result"""
+    """Schema for validation without creating a submission."""
+
     valid: bool
     error_message: Optional[str] = None
     format: Optional[str] = None
@@ -41,6 +42,7 @@ class ValidationResult:
 
 @dataclass
 class BatchSubmission:
-    """Schema for batch submission"""
+    """Schema for a future batch-processing request."""
+
     images: List[ImageSubmission]
     batch_id: Optional[str] = None

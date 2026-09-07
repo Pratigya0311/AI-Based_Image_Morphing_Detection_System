@@ -67,9 +67,11 @@ dmypy.json
 data/processed/*
 data/raw/*
 data/sample/*
+data/metadata/*
 !data/processed/.gitkeep
 !data/raw/.gitkeep
 !data/sample/.gitkeep
+!data/metadata/.gitkeep
 
 # Model files (too large for Git)
 models/checkpoints/*
