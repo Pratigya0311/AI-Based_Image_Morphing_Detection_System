@@ -1,0 +1,5 @@
+fastapi
+numpy
+opencv-contrib-python
+pytest
+torch
