@@ -72,6 +72,8 @@ data/metadata/*
 !data/raw/.gitkeep
 !data/sample/.gitkeep
 !data/metadata/.gitkeep
+data/audit/*
+!data/audit/.gitkeep
 
 # Model files (too large for Git)
 models/checkpoints/*
@@ -96,6 +98,9 @@ frontend/build/
 tests/inference/.tmp_*.pt
 tests/inference/.tmp_*_dataset/
 tests/batch/.tmp_reports/
+tests/audit/.tmp_*.db
+tests/inference/.tmp_*_audit.db
+tests/batch/.tmp_*_audit.db
 data/raw/morph_dataset/
 data/reports/*
 !data/reports/.gitkeep

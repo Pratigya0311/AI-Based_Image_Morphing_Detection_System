@@ -1,11 +1,13 @@
 """Tests for Module 6 batch orchestration and PDF reporting."""
 
 from pathlib import Path
+import uuid
 
 import pytest
 
 from app.modules.batch import BatchImage, BatchProcessingError, BatchProcessor
 from app.modules.results import ResultService
+from app.modules.audit import AuditLogger
 
 
 class StubPipeline:
@@ -81,3 +83,18 @@ def test_writes_a_pdf_report():
         for report_path in report_directory.glob("*.pdf"):
             report_path.unlink()
         report_directory.rmdir()
+
+
+def test_records_batch_summary_in_audit_log():
+    audit_path = Path(f"tests/batch/.tmp_batch_audit_{uuid.uuid4().hex}.db")
+    try:
+        audit_logger = AuditLogger(audit_path)
+        processor = BatchProcessor(StubPipeline(), audit_logger=audit_logger)
+
+        result = processor.process([BatchImage("valid.png", b"valid")], generate_report=False)
+
+        event = audit_logger.list_events(batch_id=result.batch_id)[0]
+        assert event.event_type == "batch_completed"
+        assert event.metadata["successful_count"] == 1
+    finally:
+        audit_path.unlink(missing_ok=True)

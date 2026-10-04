@@ -8,6 +8,7 @@ from typing import Optional, Protocol
 from torch import Tensor
 
 from app.modules.feature_extraction import ResNet50FeatureExtractor
+from app.modules.audit import AuditLogger
 from app.modules.preprocessing import FacePreprocessor, PreprocessedFace
 from app.modules.results import AnalysisResult, ResultService
 
@@ -41,6 +42,7 @@ class MorphAnalysisPipeline:
         preprocessor: Optional[Preprocessor] = None,
         inference_service: Optional[MorphInferenceService] = None,
         result_service: Optional[ResultService] = None,
+        audit_logger: Optional[AuditLogger] = None,
     ) -> None:
         self.feature_extractor = feature_extractor or ResNet50FeatureExtractor()
         self.preprocessor = preprocessor or FacePreprocessor()
@@ -48,6 +50,7 @@ class MorphAnalysisPipeline:
             checkpoint_path=checkpoint_path
         )
         self.result_service = result_service or ResultService()
+        self.audit_logger = audit_logger or AuditLogger()
 
     def analyze(
         self,
@@ -57,17 +60,34 @@ class MorphAnalysisPipeline:
         image_url: Optional[str] = None,
     ) -> AnalysisResult:
         """Extract features, classify them, and prepare a Module 5 result."""
-        embedding = self.feature_extractor.extract_one(preprocessed_image)
-        prediction = self.inference_service.predict_one(embedding)
-        return self.result_service.create_result(
-            submission_id, prediction.probabilities, image_url=image_url
-        )
+        try:
+            embedding = self.feature_extractor.extract_one(preprocessed_image)
+            prediction = self.inference_service.predict_one(embedding)
+            result = self.result_service.create_result(
+                submission_id, prediction.probabilities, image_url=image_url
+            )
+            self.audit_logger.record(
+                "analysis_completed", "success", submission_id=submission_id,
+                prediction=result.predicted_label, confidence=result.confidence,
+            )
+            return result
+        except Exception as exc:
+            self.audit_logger.record(
+                "analysis_completed", "failure", submission_id=submission_id,
+                error_message=str(exc),
+            )
+            raise
 
     def analyze_image(
         self, submission_id: str, image_bytes: bytes, *, image_url: Optional[str] = None
     ) -> AnalysisResult:
         """Run the complete Module 2 → 3 → 4 → 5 workflow from image bytes."""
-        preprocessed = self.preprocessor.process(submission_id, image_bytes)
-        return self.analyze(
-            submission_id, preprocessed.tensor, image_url=image_url
-        )
+        try:
+            preprocessed = self.preprocessor.process(submission_id, image_bytes)
+        except Exception as exc:
+            self.audit_logger.record(
+                "preprocessing_completed", "failure", submission_id=submission_id,
+                error_message=str(exc),
+            )
+            raise
+        return self.analyze(submission_id, preprocessed.tensor, image_url=image_url)
