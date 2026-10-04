@@ -3,7 +3,7 @@ AI-based image morphing detection application package.
 """
 
 from flask import Flask
-from app.api import acquisition_bp
+from app.api import acquisition_bp, analysis_bp
 from app.modules.acquisition import MAX_FILE_SIZE
 
 
@@ -15,6 +15,7 @@ def create_app():
     
     # Register blueprints
     app.register_blueprint(acquisition_bp)
+    app.register_blueprint(analysis_bp)
     
     @app.route('/health', methods=['GET'])
     def health_check():

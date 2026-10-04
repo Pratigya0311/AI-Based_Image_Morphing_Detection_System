@@ -1,4 +1,4 @@
-"""REST API routes for the image-acquisition module."""
+"""REST API routes for image acquisition and morph analysis."""
 
 import logging
 from dataclasses import asdict
@@ -9,6 +9,8 @@ from werkzeug.utils import secure_filename
 
 from app.modules.acquisition import ImageAcquisition, MAX_FILE_SIZE
 from app.schemas import SubmissionResponse
+
+from .analysis import analysis_bp
 
 acquisition_bp = Blueprint("acquisition", __name__, url_prefix="/api/acquisition")
 acquisition = ImageAcquisition()
