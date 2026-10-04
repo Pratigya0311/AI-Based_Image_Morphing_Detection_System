@@ -8,6 +8,7 @@ from typing import Optional, Protocol
 from torch import Tensor
 
 from app.modules.feature_extraction import ResNet50FeatureExtractor
+from app.modules.preprocessing import FacePreprocessor, PreprocessedFace
 from app.modules.results import AnalysisResult, ResultService
 
 from .service import DEFAULT_CHECKPOINT_PATH, MorphInferenceService
@@ -17,6 +18,12 @@ class FeatureExtractor(Protocol):
     """The single-image interface supplied by Module 3."""
 
     def extract_one(self, image: Tensor) -> Tensor: ...
+
+
+class Preprocessor(Protocol):
+    """The image-to-tensor interface supplied by Module 2."""
+
+    def process(self, submission_id: str, image_bytes: bytes) -> PreprocessedFace: ...
 
 
 class MorphAnalysisPipeline:
@@ -31,10 +38,12 @@ class MorphAnalysisPipeline:
         checkpoint_path: Optional[str | Path] = DEFAULT_CHECKPOINT_PATH,
         *,
         feature_extractor: Optional[FeatureExtractor] = None,
+        preprocessor: Optional[Preprocessor] = None,
         inference_service: Optional[MorphInferenceService] = None,
         result_service: Optional[ResultService] = None,
     ) -> None:
         self.feature_extractor = feature_extractor or ResNet50FeatureExtractor()
+        self.preprocessor = preprocessor or FacePreprocessor()
         self.inference_service = inference_service or MorphInferenceService(
             checkpoint_path=checkpoint_path
         )
@@ -52,4 +61,13 @@ class MorphAnalysisPipeline:
         prediction = self.inference_service.predict_one(embedding)
         return self.result_service.create_result(
             submission_id, prediction.probabilities, image_url=image_url
+        )
+
+    def analyze_image(
+        self, submission_id: str, image_bytes: bytes, *, image_url: Optional[str] = None
+    ) -> AnalysisResult:
+        """Run the complete Module 2 → 3 → 4 → 5 workflow from image bytes."""
+        preprocessed = self.preprocessor.process(submission_id, image_bytes)
+        return self.analyze(
+            submission_id, preprocessed.tensor, image_url=image_url
         )
