@@ -95,4 +95,7 @@ frontend/build/
 *.prof
 tests/inference/.tmp_*.pt
 tests/inference/.tmp_*_dataset/
+tests/batch/.tmp_reports/
 data/raw/morph_dataset/
+data/reports/*
+!data/reports/.gitkeep
