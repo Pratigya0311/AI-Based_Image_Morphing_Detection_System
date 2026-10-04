@@ -91,3 +91,6 @@ frontend/build/
 
 # Python profiling
 *.prof
+tests/inference/.tmp_*.pt
+tests/inference/.tmp_*_dataset/
+data/raw/morph_dataset/
