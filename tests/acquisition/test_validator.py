@@ -2,7 +2,7 @@
 
 import io
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
@@ -92,7 +92,10 @@ class TestSubmissionManager(unittest.TestCase):
 
 class TestImageAcquisition(unittest.TestCase):
     def setUp(self):
-        self.acquisition = ImageAcquisition(persist=False)
+        self.audit_logger = MagicMock()
+        self.acquisition = ImageAcquisition(
+            persist=False, audit_logger=self.audit_logger
+        )
         self.image_data = png_bytes()
 
     def test_records_valid_and_invalid_submissions(self):
@@ -107,3 +110,12 @@ class TestImageAcquisition(unittest.TestCase):
             "valid",
         )
         self.assertIsNone(self.acquisition.get_submission_status("not-found"))
+        self.assertEqual(self.audit_logger.record.call_count, 2)
+        self.assertEqual(
+            self.audit_logger.record.call_args_list[0].args,
+            ("submission_validated", "success"),
+        )
+        self.assertEqual(
+            self.audit_logger.record.call_args_list[1].args,
+            ("submission_validated", "failure"),
+        )

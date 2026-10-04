@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional, Protocol, Sequence
 
 from app.modules.results import AnalysisResult
+from app.modules.audit import AuditLogger
 
 
 class BatchProcessingError(ValueError):
@@ -150,6 +151,7 @@ class BatchProcessor:
         report_generator: Optional[PdfReportGenerator] = None,
         report_directory: Optional[str | Path] = None,
         max_batch_size: int = 50,
+        audit_logger: Optional[AuditLogger] = None,
     ) -> None:
         if max_batch_size <= 0:
             raise ValueError("max_batch_size must be positive")
@@ -157,6 +159,7 @@ class BatchProcessor:
         self.report_generator = report_generator or PdfReportGenerator()
         self.report_directory = Path(report_directory or Path("data") / "reports")
         self.max_batch_size = max_batch_size
+        self.audit_logger = audit_logger or AuditLogger()
 
     def process(self, images: Sequence[BatchImage], *, generate_report: bool = True) -> BatchResult:
         """Process every image without allowing one failure to stop the batch."""
@@ -181,8 +184,16 @@ class BatchProcessor:
                 )
 
         batch_result = BatchResult(batch_id, created_at, tuple(item_results))
-        if not generate_report:
-            return batch_result
-        report_path = self.report_directory / f"{batch_id}.pdf"
-        generated_path = self.report_generator.generate(batch_result, report_path)
-        return BatchResult(batch_id, created_at, tuple(item_results), str(generated_path))
+        if generate_report:
+            report_path = self.report_directory / f"{batch_id}.pdf"
+            generated_path = self.report_generator.generate(batch_result, report_path)
+            batch_result = BatchResult(batch_id, created_at, tuple(item_results), str(generated_path))
+        self.audit_logger.record(
+            "batch_completed", "success", batch_id=batch_id,
+            metadata={
+                "successful_count": batch_result.successful_count,
+                "failed_count": batch_result.failed_count,
+                "report_path": batch_result.report_path,
+            },
+        )
+        return batch_result

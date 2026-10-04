@@ -13,6 +13,8 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 from PIL import Image
 
+from app.modules.audit import AuditLogger
+
 SUPPORTED_FORMATS = {"JPEG", "PNG", "BMP"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MiB
 
@@ -193,7 +195,10 @@ class ImageAcquisition:
     """Public entry point for processing a single image submission."""
 
     def __init__(
-        self, storage_path: Optional[Union[str, Path]] = None, persist: bool = True
+        self,
+        storage_path: Optional[Union[str, Path]] = None,
+        persist: bool = True,
+        audit_logger: Optional[AuditLogger] = None,
     ) -> None:
         default_path = (
             Path(__file__).resolve().parents[3]
@@ -205,6 +210,7 @@ class ImageAcquisition:
         self.submission_manager = SubmissionManager(
             (storage_path or default_path) if persist else None
         )
+        self.audit_logger = audit_logger or AuditLogger()
 
     def process_image(self, file_bytes: bytes, filename: str) -> Dict[str, Any]:
         """Validate an image and create an auditable submission record."""
@@ -221,6 +227,17 @@ class ImageAcquisition:
                 error_message=error_message,
             )
             self.submission_manager.record_submission(metadata)
+            self.audit_logger.record(
+                "submission_validated",
+                "failure",
+                submission_id=metadata.submission_id,
+                error_message=error_message,
+                metadata={
+                    "filename": metadata.filename,
+                    "size": metadata.size,
+                    "file_hash": metadata.file_hash,
+                },
+            )
             return {
                 "submission_id": metadata.submission_id,
                 "valid": False,
@@ -229,6 +246,17 @@ class ImageAcquisition:
             }
 
         metadata = self.submission_manager.create_submission(file_bytes, filename)
+        self.audit_logger.record(
+            "submission_validated",
+            "success",
+            submission_id=metadata.submission_id,
+            metadata={
+                "filename": metadata.filename,
+                "format": metadata.format,
+                "size": metadata.size,
+                "file_hash": metadata.file_hash,
+            },
+        )
         return {
             "submission_id": metadata.submission_id,
             "valid": True,
