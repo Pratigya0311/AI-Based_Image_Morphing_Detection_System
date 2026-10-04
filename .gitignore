@@ -78,6 +78,8 @@ models/checkpoints/*
 models/metadata/*
 !models/checkpoints/.gitkeep
 !models/metadata/.gitkeep
+models/landmarks/*.yaml
+!models/landmarks/.gitkeep
 
 # Docker
 docker/*.tar
