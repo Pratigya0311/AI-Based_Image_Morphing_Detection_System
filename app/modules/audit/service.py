@@ -1,20 +1,21 @@
-"""Durable SQLite append-only operational records for image-analysis activity."""
+"""Audit persistence backed by the shared relational application database."""
 
 from __future__ import annotations
 
-import json
-import sqlite3
-import threading
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from sqlalchemy import select
+
+from app.core.database import AuditEventRecord, Database, database
+
 
 @dataclass(frozen=True)
 class AuditEvent:
-    """An immutable record of one pipeline or batch operation."""
+    """One immutable, operationally useful audit record."""
 
     event_id: str
     timestamp: str
@@ -25,6 +26,7 @@ class AuditEvent:
     prediction: Optional[str] = None
     confidence: Optional[float] = None
     error_message: Optional[str] = None
+    actor_email: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -32,47 +34,34 @@ class AuditEvent:
 
 
 class AuditLogger:
-    """Writes append-only operational records to SQLite."""
+    """Writes audit records to PostgreSQL or an isolated SQLite test database."""
 
     def __init__(self, database_path: Optional[str | Path] = None) -> None:
-        self.database_path = Path(database_path or Path("data") / "audit" / "audit.db")
-        self._lock = threading.Lock()
-        self._initialize()
+        if database_path is None:
+            self.database = database
+        else:
+            self.database = Database()
+            self.database.configure(f"sqlite:///{Path(database_path).as_posix()}")
+        self.database.initialize_schema()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
-
-    def _initialize(self) -> None:
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = self._connect()
-        try:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS audit_events (
-                    event_id TEXT PRIMARY KEY,
-                    timestamp TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    outcome TEXT NOT NULL,
-                    submission_id TEXT,
-                    batch_id TEXT,
-                    prediction TEXT,
-                    confidence REAL,
-                    error_message TEXT,
-                    metadata_json TEXT NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_audit_submission ON audit_events(submission_id)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_audit_batch ON audit_events(batch_id)"
-            )
-            connection.commit()
-        finally:
-            connection.close()
+    @staticmethod
+    def _to_event(record: AuditEventRecord) -> AuditEvent:
+        timestamp = record.timestamp
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return AuditEvent(
+            event_id=record.event_id,
+            timestamp=timestamp.isoformat(),
+            event_type=record.event_type,
+            outcome=record.outcome,
+            submission_id=record.submission_id,
+            batch_id=record.batch_id,
+            prediction=record.prediction,
+            confidence=record.confidence,
+            error_message=record.error_message,
+            actor_email=record.actor_email,
+            metadata=record.metadata_json,
+        )
 
     def record(
         self,
@@ -84,14 +73,15 @@ class AuditLogger:
         prediction: Optional[str] = None,
         confidence: Optional[float] = None,
         error_message: Optional[str] = None,
+        actor_email: Optional[str] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> AuditEvent:
-        """Persist one structured audit event and return its immutable record."""
+        """Persist one structured event in the configured relational database."""
         if not event_type.strip() or not outcome.strip():
             raise ValueError("Audit event type and outcome are required")
-        event = AuditEvent(
+        record = AuditEventRecord(
             event_id=f"AUDIT_{uuid.uuid4().hex.upper()}",
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(timezone.utc),
             event_type=event_type,
             outcome=outcome,
             submission_id=submission_id,
@@ -99,62 +89,28 @@ class AuditLogger:
             prediction=prediction,
             confidence=confidence,
             error_message=error_message,
-            metadata=dict(metadata or {}),
+            actor_email=actor_email,
+            metadata_json=dict(metadata or {}),
         )
-        with self._lock:
-            connection = self._connect()
-            try:
-                connection.execute(
-                    """
-                    INSERT INTO audit_events (
-                        event_id, timestamp, event_type, outcome, submission_id,
-                        batch_id, prediction, confidence, error_message, metadata_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event.event_id,
-                        event.timestamp,
-                        event.event_type,
-                        event.outcome,
-                        event.submission_id,
-                        event.batch_id,
-                        event.prediction,
-                        event.confidence,
-                        event.error_message,
-                        json.dumps(event.metadata, sort_keys=True),
-                    ),
-                )
-                connection.commit()
-            finally:
-                connection.close()
-        return event
+        with self.database.session() as session:
+            session.add(record)
+        return self._to_event(record)
 
     def list_events(
-        self, *, submission_id: Optional[str] = None, batch_id: Optional[str] = None
+        self,
+        *,
+        submission_id: Optional[str] = None,
+        batch_id: Optional[str] = None,
+        actor_email: Optional[str] = None,
     ) -> list[AuditEvent]:
-        """Return audit events, optionally filtered by submission or batch."""
-        clauses, parameters = [], []
+        """Return ordered events filtered by correlation fields."""
+        statement = select(AuditEventRecord).order_by(AuditEventRecord.timestamp.asc())
         if submission_id:
-            clauses.append("submission_id = ?")
-            parameters.append(submission_id)
+            statement = statement.where(AuditEventRecord.submission_id == submission_id)
         if batch_id:
-            clauses.append("batch_id = ?")
-            parameters.append(batch_id)
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self._lock:
-            connection = self._connect()
-            try:
-                rows = connection.execute(
-                    f"SELECT * FROM audit_events{where} ORDER BY timestamp ASC", parameters
-                ).fetchall()
-            finally:
-                connection.close()
-        return [
-            AuditEvent(
-                event_id=row["event_id"], timestamp=row["timestamp"], event_type=row["event_type"],
-                outcome=row["outcome"], submission_id=row["submission_id"], batch_id=row["batch_id"],
-                prediction=row["prediction"], confidence=row["confidence"],
-                error_message=row["error_message"], metadata=json.loads(row["metadata_json"]),
-            )
-            for row in rows
-        ]
+            statement = statement.where(AuditEventRecord.batch_id == batch_id)
+        if actor_email:
+            statement = statement.where(AuditEventRecord.actor_email == actor_email)
+        with self.database.session() as session:
+            records = list(session.scalars(statement))
+        return [self._to_event(record) for record in records]
