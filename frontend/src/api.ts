@@ -8,6 +8,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  me: () => request<{ authenticated: boolean; user: { name: string; email: string; picture?: string } }>('/api/auth/me'),
+  profile: () => request<{ user: { name: string; email: string; picture?: string }; stats: { images_analyzed: number; batches_created: number; morphed_flags: number } }>('/api/auth/profile'),
+  loginUrl: '/api/auth/google',
+  logout: () => request<{ authenticated: boolean }>('/api/auth/logout', { method: 'POST' }),
   health: () => request<{ status: string }>('/api/analysis/health'),
   analyze: (file: File) => { const form = new FormData(); form.append('image', file); return request<AnalysisResponse>('/api/analysis/analyze', { method: 'POST', body: form }) },
   batch: (files: File[]) => { const form = new FormData(); files.forEach(file => form.append('images', file)); form.append('generate_report', 'true'); return request<BatchResponse>('/api/analysis/batch', { method: 'POST', body: form }) },

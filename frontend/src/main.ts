@@ -1,7 +1,9 @@
 import './style.css'
 import './workspace.css'
+import './login.css'
 import { api } from './api'
 import { icon } from './icons'
+import { loginTemplate } from './login'
 import { analysisProgress, applicationTemplate, batchCard, escapeHtml, resultCard } from './ui'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
@@ -123,3 +125,18 @@ const sectionObserver = new IntersectionObserver(entries => {
 }, { rootMargin: '-22% 0px -58% 0px', threshold: [0.1, 0.35, 0.6] })
 
 observedSections.forEach(section => sectionObserver.observe(section))
+
+void api.profile().then(profile => {
+  const initial = profile.user.name.trim().charAt(0).toUpperCase()
+  const avatar = document.querySelector<HTMLElement>('#account-avatar')!
+  const name = document.querySelector<HTMLElement>('#account-name')!
+  avatar.textContent = initial; name.textContent = profile.user.name.split(' ')[0]
+  if (profile.user.picture) avatar.style.backgroundImage = `url("${profile.user.picture}")`
+  const menu = document.querySelector<HTMLElement>('#account-menu')!
+  menu.innerHTML = `<div class="account-info"><strong>${escapeHtml(profile.user.name)}</strong><span>${escapeHtml(profile.user.email)}</span></div><div class="account-stats"><div><strong>${profile.stats.images_analyzed}</strong><span>Images analyzed</span></div><div><strong>${profile.stats.batches_created}</strong><span>Batches created</span></div><div><strong>${profile.stats.morphed_flags}</strong><span>Morph flags</span></div></div><button id="logout-button">Sign out</button>`
+  document.querySelector('#account-button')!.addEventListener('click', () => menu.classList.toggle('hidden'))
+  document.querySelector('#logout-button')!.addEventListener('click', async () => { await api.logout(); window.location.reload() })
+}).catch(() => {
+  app.innerHTML = loginTemplate()
+  document.querySelector('#google-login')!.addEventListener('click', () => window.location.assign(api.loginUrl))
+})
