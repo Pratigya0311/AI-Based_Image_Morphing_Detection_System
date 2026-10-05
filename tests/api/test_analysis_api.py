@@ -36,6 +36,8 @@ class TestAnalysisApi(unittest.TestCase):
         app = create_app()
         app.config["TESTING"] = True
         self.client = app.test_client()
+        with self.client.session_transaction() as session:
+            session["user"] = {"id": "test-user", "email": "test@example.com"}
 
     def tearDown(self):
         acquisition_api.acquisition = self.original_acquisition

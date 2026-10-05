@@ -6,13 +6,15 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, jsonify, request, send_file, session
 from werkzeug.utils import secure_filename
 
 from app.modules.audit import AuditLogger
+from app.core.database import database
 from app.modules.batch import BatchImage, BatchProcessingError, BatchProcessor
 from app.modules.inference import ModelInferenceError, MorphAnalysisPipeline
 from app.modules.preprocessing import PreprocessingError
+from app.api.auth import login_required
 
 analysis_bp = Blueprint("analysis", __name__, url_prefix="/api/analysis")
 logger = logging.getLogger(__name__)
@@ -86,10 +88,23 @@ def _run_analysis(submission: dict, image_bytes: bytes):
             stage="analysis",
         )
 
+    AuditLogger().record(
+        "user_analysis_completed",
+        "success",
+        submission_id=submission["submission_id"],
+        prediction=result.predicted_label,
+        confidence=result.confidence,
+        actor_email=session["user"]["email"],
+    )
+    database.record_analysis(
+        session["user"]["email"], submission["submission_id"],
+        result.predicted_label, result.confidence,
+    )
     return jsonify({"submission": submission, "result": result.to_dict()}), 201
 
 
 @analysis_bp.route("/analyze", methods=["POST"])
+@login_required
 def analyze_image():
     """Validate one uploaded image and return its final morph-analysis result."""
     if "image" not in request.files:
@@ -102,6 +117,7 @@ def analyze_image():
 
 
 @analysis_bp.route("/batch", methods=["POST"])
+@login_required
 def analyze_batch():
     """Validate and analyse a batch of images, with an optional PDF report."""
     files = request.files.getlist("images")
@@ -135,10 +151,25 @@ def analyze_batch():
         logger.exception("Batch analysis is unavailable")
         return _error_response("Batch analysis service is unavailable", 503, detail=str(exc))
 
+    AuditLogger().record(
+        "user_batch_completed",
+        "success",
+        batch_id=batch_result.batch_id,
+        actor_email=session["user"]["email"],
+        metadata={
+            "successful_count": batch_result.successful_count,
+            "failed_count": batch_result.failed_count,
+        },
+    )
+    database.record_batch(
+        session["user"]["email"], batch_result.batch_id,
+        batch_result.successful_count, batch_result.failed_count, batch_result.report_path,
+    )
     return jsonify(batch_result.to_dict()), 201
 
 
 @analysis_bp.route("/report/<batch_id>", methods=["GET"])
+@login_required
 def download_report(batch_id: str):
     """Download the PDF report recorded for a completed batch."""
     events = AuditLogger().list_events(batch_id=batch_id)
@@ -159,6 +190,7 @@ def download_report(batch_id: str):
 
 
 @analysis_bp.route("/audit/submission/<submission_id>", methods=["GET"])
+@login_required
 def submission_audit_events(submission_id: str):
     """Return operational audit events for a single submission."""
     events = AuditLogger().list_events(submission_id=submission_id)
@@ -166,6 +198,7 @@ def submission_audit_events(submission_id: str):
 
 
 @analysis_bp.route("/audit/batch/<batch_id>", methods=["GET"])
+@login_required
 def batch_audit_events(batch_id: str):
     """Return operational audit events for a single batch."""
     events = AuditLogger().list_events(batch_id=batch_id)
