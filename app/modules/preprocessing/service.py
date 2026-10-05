@@ -40,6 +40,10 @@ class LandmarkDetectionError(PreprocessingError):
     """Eye landmarks required for alignment could not be detected."""
 
 
+class LowImageQualityError(PreprocessingError):
+    """The detected face is too blurry for reliable morph analysis."""
+
+
 @dataclass(frozen=True)
 class FaceBoundingBox:
     """A face rectangle in source-image pixel coordinates."""
@@ -140,16 +144,20 @@ class FacePreprocessor:
         output_size: tuple[int, int] = (INPUT_WIDTH, INPUT_HEIGHT),
         crop_margin: float = 0.2,
         reject_multiple_faces: bool = True,
+        min_sharpness: float = 20.0,
     ) -> None:
         if output_size != (INPUT_WIDTH, INPUT_HEIGHT):
             raise ValueError("Module 3 requires preprocessing output size (224, 224)")
         if not 0 <= crop_margin < 1:
             raise ValueError("crop_margin must be in [0, 1)")
+        if min_sharpness < 0:
+            raise ValueError("min_sharpness must be non-negative")
         self.face_detector = face_detector or HaarFaceDetector()
         self.landmark_detector = landmark_detector or LBFLandmarkDetector()
         self.output_size = output_size
         self.crop_margin = crop_margin
         self.reject_multiple_faces = reject_multiple_faces
+        self.min_sharpness = min_sharpness
 
     def process(self, submission_id: str, image_bytes: bytes) -> PreprocessedFace:
         """Detect, align, crop, resize, and normalize a single facial image."""
@@ -166,6 +174,12 @@ class FacePreprocessor:
         face = self._validate_face(faces[0], image)
         eyes = self.landmark_detector.detect(image, face)
         aligned_face = self._align_crop_and_resize(image, face, eyes)
+        sharpness = self.sharpness_score(aligned_face)
+        if sharpness < self.min_sharpness:
+            raise LowImageQualityError(
+                "Image quality is too low for reliable morph analysis. "
+                "Please upload a sharper, well-lit, front-facing image."
+            )
         return PreprocessedFace(
             submission_id=submission_id,
             tensor=self._to_tensor(aligned_face),
@@ -220,3 +234,14 @@ class FacePreprocessor:
             IMAGENET_STD, dtype=np.float32
         )
         return torch.from_numpy(np.ascontiguousarray(normalized.transpose(2, 0, 1)))
+
+    @staticmethod
+    def sharpness_score(image: np.ndarray) -> float:
+        """Return variance-of-Laplacian sharpness for an aligned face crop.
+
+        Low values indicate that edge detail has been lost through blur.  The
+        score is deliberately measured after crop/alignment, so background
+        detail cannot make a blurry face pass the quality gate.
+        """
+        grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        return float(cv2.Laplacian(grayscale, cv2.CV_64F).var())

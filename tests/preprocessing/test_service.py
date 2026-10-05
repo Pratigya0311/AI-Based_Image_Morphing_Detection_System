@@ -10,6 +10,7 @@ from app.modules.preprocessing import (
     FacePreprocessor,
     InvalidImageError,
     LandmarkDetectionError,
+    LowImageQualityError,
     MultipleFacesDetectedError,
     NoFaceDetectedError,
 )
@@ -33,8 +34,13 @@ class FailingEyeDetector:
         raise LandmarkDetectionError("Eyes unavailable")
 
 
-def image_bytes(width=120, height=120):
-    image = np.full((height, width, 3), 128, dtype=np.uint8)
+def image_bytes(width=120, height=120, *, blurred=False):
+    """Create a textured image which represents a sufficiently sharp face crop."""
+    y, x = np.indices((height, width))
+    pattern = ((x * 17 + y * 31) % 256).astype(np.uint8)
+    image = np.dstack((pattern, np.roll(pattern, 3, axis=0), np.roll(pattern, 5, axis=1)))
+    if blurred:
+        image = cv2.GaussianBlur(image, (21, 21), 0)
     encoded, values = cv2.imencode(".png", image)
     assert encoded
     return values.tobytes()
@@ -82,3 +88,18 @@ def test_rejects_face_outside_source_bounds():
     )
     with pytest.raises(ValueError, match="outside image bounds"):
         preprocessor.process("SUB_1", image_bytes())
+
+
+def test_rejects_blurry_face_crops_before_feature_extraction():
+    preprocessor = FacePreprocessor(
+        FixedFaceDetector([FaceBoundingBox(30, 30, 60, 60)]),
+        landmark_detector=FixedEyeDetector(),
+        min_sharpness=20.0,
+    )
+
+    with pytest.raises(LowImageQualityError, match="too low"):
+        preprocessor.process("SUB_BLURRY", image_bytes(blurred=True))
+
+    assert FacePreprocessor.sharpness_score(
+        cv2.imdecode(np.frombuffer(image_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
+    ) > 20.0
