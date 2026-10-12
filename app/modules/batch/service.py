@@ -90,6 +90,7 @@ class PdfReportGenerator:
             from reportlab.lib.units import mm
             from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
             from reportlab.lib import colors
+            from xml.sax.saxutils import escape
         except ImportError as exc:
             raise RuntimeError("PDF reports require reportlab; install project dependencies.") from exc
 
@@ -109,21 +110,35 @@ class PdfReportGenerator:
             ),
             Spacer(1, 6 * mm),
         ]
-        rows = [["Submission", "Filename", "Prediction", "Confidence", "Status/Error"]]
-        for item in batch_result.items:
+        # Internal IDs are audit keys, not report labels: their length makes a
+        # compact PDF unreadable. Numbered rows preserve the batch ordering.
+        rows = [["#", "Image filename", "Prediction", "Confidence", "Status / error"]]
+        cell_style = styles["BodyText"]
+        cell_style.fontSize = 8
+        cell_style.leading = 10
+        cell_style.wordWrap = "CJK"
+        for index, item in enumerate(batch_result.items, start=1):
+            filename = Paragraph(escape(item.filename), cell_style)
             if item.result:
                 rows.append(
                     [
-                        item.submission_id,
-                        item.filename,
+                        str(index),
+                        filename,
                         item.result.predicted_label,
                         f"{item.result.confidence_percentage:.2f}%",
                         "Processed",
                     ]
                 )
             else:
+                error = Paragraph(escape(item.error or "Failed"), cell_style)
+                rows.append([str(index), filename, "-", "-", error])
+                continue
                 rows.append([item.submission_id, item.filename, "—", "—", item.error or "Failed"])
-        table = Table(rows, repeatRows=1, colWidths=[32 * mm, 40 * mm, 27 * mm, 25 * mm, 48 * mm])
+        table = Table(
+            rows,
+            repeatRows=1,
+            colWidths=[12 * mm, 60 * mm, 29 * mm, 25 * mm, 54 * mm],
+        )
         table.setStyle(
             TableStyle(
                 [

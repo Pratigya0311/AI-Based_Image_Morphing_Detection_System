@@ -85,6 +85,22 @@ def test_writes_a_pdf_report():
         report_directory.rmdir()
 
 
+def test_pdf_report_handles_long_filenames_cleanly():
+    report_directory = Path("tests/batch/.tmp_reports")
+    processor = BatchProcessor(StubPipeline(), report_directory=report_directory)
+    filename = "very_long_passport_photo_filename_for_pdf_layout_validation.png"
+    try:
+        result = processor.process([BatchImage(filename, b"valid")])
+
+        report_path = Path(result.report_path)
+        assert report_path.exists()
+        assert report_path.read_bytes().startswith(b"%PDF")
+    finally:
+        for report_path in report_directory.glob("*.pdf"):
+            report_path.unlink()
+        report_directory.rmdir()
+
+
 def test_records_batch_summary_in_audit_log():
     audit_path = Path(f"tests/batch/.tmp_batch_audit_{uuid.uuid4().hex}.db")
     try:

@@ -11,6 +11,7 @@ from app.modules.acquisition import ImageAcquisition, MAX_FILE_SIZE
 from app.schemas import SubmissionResponse
 
 from .analysis import analysis_bp
+from .auth import auth_bp
 
 acquisition_bp = Blueprint("acquisition", __name__, url_prefix="/api/acquisition")
 acquisition = ImageAcquisition()
