@@ -9,15 +9,14 @@ from typing import Any, Mapping, Optional, Union
 import torch
 from torch import Tensor, nn
 
+from app.core.model_assets import CLASSIFIER_CHECKPOINT, ModelAssetError, classifier_checkpoint_path
 from app.modules.feature_extraction import EMBEDDING_DIMENSION
 
 GENUINE_LABEL = "Genuine"
 MORPHED_LABEL = "Morphed"
 CLASS_LABELS = (GENUINE_LABEL, MORPHED_LABEL)
 NUMBER_OF_CLASSES = len(CLASS_LABELS)
-DEFAULT_CHECKPOINT_PATH = (
-    Path(__file__).resolve().parents[3] / "models" / "checkpoints" / "morph_classifier.pt"
-)
+DEFAULT_CHECKPOINT_PATH = CLASSIFIER_CHECKPOINT
 
 
 class ModelInferenceError(RuntimeError):
@@ -135,6 +134,11 @@ class MorphInferenceService:
     def load_checkpoint(self, checkpoint_path: Union[str, Path]) -> None:
         """Load trusted classifier weights from disk and reset inference mode."""
         path = Path(checkpoint_path)
+        if path == DEFAULT_CHECKPOINT_PATH and not path.is_file():
+            try:
+                path = classifier_checkpoint_path()
+            except ModelAssetError as exc:
+                raise ModelInferenceError("Model checkpoint could not be prepared for inference") from exc
         if not path.is_file():
             raise ModelInferenceError(f"Model checkpoint was not found: {path}")
         try:

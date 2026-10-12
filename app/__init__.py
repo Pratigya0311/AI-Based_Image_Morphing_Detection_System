@@ -5,6 +5,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from flask import Flask
+from flask_cors import CORS
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -40,9 +41,17 @@ def create_app():
         ADMIN_INITIAL_PASSWORD=os.getenv("ADMIN_INITIAL_PASSWORD"),
         DATABASE_URL=os.getenv("DATABASE_URL", default_database_url()),
         SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE="Lax",
+        # The separately deployed frontend needs an authenticated cross-site
+        # request cookie. Local development remains protected by Lax cookies.
+        SESSION_COOKIE_SAMESITE="None" if environment == "production" else "Lax",
         SESSION_COOKIE_SECURE=environment == "production",
         PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+    )
+    CORS(
+        app,
+        origins=[app.config["FRONTEND_URL"]],
+        supports_credentials=True,
+        methods=["GET", "POST", "DELETE", "OPTIONS"],
     )
     if environment == "production" and not app.config["DATABASE_URL"].startswith("postgresql"):
         raise RuntimeError("DATABASE_URL must use PostgreSQL in production")
