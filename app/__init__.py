@@ -30,6 +30,14 @@ def create_app():
         ),
         FRONTEND_URL=os.getenv("FRONTEND_URL", "http://localhost:5173"),
         BACKEND_URL=os.getenv("BACKEND_URL", "http://localhost:5000"),
+        SMTP_HOST=os.getenv("SMTP_HOST"),
+        SMTP_PORT=int(os.getenv("SMTP_PORT", "587")),
+        SMTP_USERNAME=os.getenv("SMTP_USERNAME"),
+        SMTP_PASSWORD=os.getenv("SMTP_PASSWORD"),
+        SMTP_FROM=os.getenv("SMTP_FROM"),
+        EMAIL_VERIFICATION_REQUIRED=os.getenv("EMAIL_VERIFICATION_REQUIRED", "true").lower() == "true",
+        ADMIN_EMAIL=os.getenv("ADMIN_EMAIL"),
+        ADMIN_INITIAL_PASSWORD=os.getenv("ADMIN_INITIAL_PASSWORD"),
         DATABASE_URL=os.getenv("DATABASE_URL", default_database_url()),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
@@ -40,6 +48,10 @@ def create_app():
         raise RuntimeError("DATABASE_URL must use PostgreSQL in production")
     database.configure(app.config["DATABASE_URL"])
     database.initialize_schema()
+    database.ensure_admin(
+        app.config["ADMIN_EMAIL"],
+        app.config["ADMIN_INITIAL_PASSWORD"],
+    )
     # Allows multipart overhead while the validator enforces the 10 MiB file limit.
     app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE + (1024 * 1024)
     

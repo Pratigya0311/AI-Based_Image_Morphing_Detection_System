@@ -1,16 +1,24 @@
-"""Google OpenID Connect authentication for the protected analysis APIs."""
+"""Google and local-account authentication for protected analysis APIs."""
 
 from __future__ import annotations
 
 from functools import wraps
+from email.message import EmailMessage
+import re
+import smtplib
+from urllib.parse import quote
 
 from authlib.integrations.flask_client import OAuth
-from flask import Blueprint, current_app, jsonify, redirect, session
+from flask import Blueprint, current_app, jsonify, redirect, request, session
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.core.database import database
+from app.modules.audit import AuditLogger
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 oauth = OAuth()
+EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 def init_auth(app) -> None:
@@ -28,7 +36,7 @@ def init_auth(app) -> None:
 
 
 def login_required(view):
-    """Require a local session created only after a verified Google callback."""
+    """Require a verified local or Google-backed application session."""
     @wraps(view)
     def wrapped(*args, **kwargs):
         if "user" not in session:
@@ -36,6 +44,215 @@ def login_required(view):
         return view(*args, **kwargs)
 
     return wrapped
+
+
+def _session_user(user) -> dict:
+    """Expose only the identity fields required by the browser."""
+    return {
+        "id": user.id,
+        "name": user.display_name,
+        "email": user.email,
+        "picture": user.picture_url,
+        "role": user.role,
+    }
+
+
+def _sign_in(user) -> None:
+    session.clear()
+    session.permanent = True
+    session["user"] = _session_user(user)
+
+
+def admin_required(view):
+    """Require a currently valid deployment-managed administrator role.
+
+    The browser session is intentionally small and can outlive a role change
+    made during application start-up (for example when ``ADMIN_EMAIL`` is
+    configured after the account already exists).  Re-read the role from the
+    database here so an old ``user`` session is promoted correctly and a
+    removed admin role cannot continue to access protected endpoints.
+    """
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        session_user = session.get("user")
+        account = database.account_details(session_user.get("email")) if session_user else None
+        if not account or account.get("role") != "admin":
+            return jsonify({"error": "Administrator access is required"}), 403
+        session_user["role"] = "admin"
+        session["user"] = session_user
+        return view(*args, **kwargs)
+    return wrapped
+
+
+def _credentials(payload: dict, include_name: bool = False):
+    email = str(payload.get("email", "")).strip().lower()
+    password = str(payload.get("password", ""))
+    name = str(payload.get("name", "")).strip()
+    if not EMAIL_PATTERN.fullmatch(email):
+        return None, None, None, ("Enter a valid email address", 400)
+    if len(password) < 8 or len(password) > 128:
+        return None, None, None, ("Password must contain 8 to 128 characters", 400)
+    if include_name and not 2 <= len(name) <= 255:
+        return None, None, None, ("Enter your name using 2 to 255 characters", 400)
+    return name, email, password, None
+
+
+def _valid_new_password(password: object):
+    value = str(password or "")
+    if not 8 <= len(value) <= 128:
+        return None, ("Password must contain 8 to 128 characters", 400)
+    return value, None
+
+
+def _reset_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="password-reset-v1")
+
+
+def _send_password_reset(email: str, token: str) -> bool:
+    """Send an expiring reset link through configured deployment SMTP."""
+    required = ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM")
+    if not all(current_app.config.get(item) for item in required):
+        return False
+    reset_url = f"{current_app.config['FRONTEND_URL'].rstrip('/')}?reset_token={quote(token)}"
+    message = EmailMessage()
+    message["Subject"] = "Reset your AI Morph Detection password"
+    message["From"] = current_app.config["SMTP_FROM"]
+    message["To"] = email
+    message.set_content(
+        "A password reset was requested for your AI Morph Detection account.\n\n"
+        f"Use this link within one hour: {reset_url}\n\n"
+        "If you did not request this, you can ignore this email."
+    )
+    with smtplib.SMTP(current_app.config["SMTP_HOST"], current_app.config["SMTP_PORT"], timeout=15) as server:
+        server.starttls()
+        server.login(current_app.config["SMTP_USERNAME"], current_app.config["SMTP_PASSWORD"])
+        server.send_message(message)
+    return True
+
+
+def _send_verification_email(email: str, token: str) -> None:
+    """Email a one-hour account-verification link before a local account exists."""
+    required = ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM")
+    if not all(current_app.config.get(item) for item in required):
+        raise RuntimeError("Email verification is not configured")
+    verify_url = f"{current_app.config['FRONTEND_URL'].rstrip('/')}?verify_token={quote(token)}"
+    message = EmailMessage()
+    message["Subject"] = "Verify your AI Morph Detection account"
+    message["From"] = current_app.config["SMTP_FROM"]
+    message["To"] = email
+    message.set_content(
+        "Verify your email to activate your AI Morph Detection account.\n\n"
+        f"Use this link within one hour: {verify_url}\n\n"
+        "If you did not create this account, you can ignore this email."
+    )
+    with smtplib.SMTP(current_app.config["SMTP_HOST"], current_app.config["SMTP_PORT"], timeout=15) as server:
+        server.starttls()
+        server.login(current_app.config["SMTP_USERNAME"], current_app.config["SMTP_PASSWORD"])
+        server.send_message(message)
+
+
+@auth_bp.route("/register", methods=["POST"])
+def register():
+    """Start verified registration; accounts activate only after email approval."""
+    payload = request.get_json(silent=True) or {}
+    name, email, password, error = _credentials(payload, include_name=True)
+    if error:
+        return jsonify({"error": error[0]}), error[1]
+    if database.local_user_by_email(email) is not None:
+        return jsonify({"error": "An account already exists for this email address"}), 409
+    if not current_app.config["EMAIL_VERIFICATION_REQUIRED"]:
+        user = database.create_local_user(name, email, generate_password_hash(password))
+        assert user is not None
+        _sign_in(user)
+        return jsonify({"authenticated": True, "user": _session_user(user)}), 201
+    token = database.create_pending_registration(name, email, generate_password_hash(password))
+    try:
+        _send_verification_email(email, token)
+    except (OSError, RuntimeError):
+        current_app.logger.exception("Verification email could not be sent")
+        return jsonify({"error": "Email verification is not configured or could not send a message"}), 503
+    return jsonify({"message": "Check your email to verify and activate your account."}), 202
+
+
+@auth_bp.route("/verify-email", methods=["POST"])
+def verify_email():
+    """Activate a pending registration from its signed, one-hour email link."""
+    token = str((request.get_json(silent=True) or {}).get("token", ""))
+    user = database.consume_pending_registration(token)
+    if user is None:
+        return jsonify({"error": "This verification link is invalid, expired, or already used"}), 400
+    _sign_in(user)
+    return jsonify({"authenticated": True, "user": _session_user(user)}), 201
+
+
+@auth_bp.route("/login", methods=["POST"])
+def password_login():
+    """Authenticate an existing local account without exposing account existence."""
+    payload = request.get_json(silent=True) or {}
+    _, email, password, error = _credentials(payload)
+    if error:
+        return jsonify({"error": error[0]}), error[1]
+    user = database.local_user_by_email(email)
+    if user is None or not user.password_hash or not check_password_hash(user.password_hash, password):
+        return jsonify({"error": "Invalid email or password"}), 401
+    database.mark_logged_in(user.id)
+    _sign_in(user)
+    return jsonify({"authenticated": True, "user": _session_user(user)})
+
+
+@auth_bp.route("/forgot-password", methods=["POST"])
+def forgot_password():
+    """Email a one-hour reset token without revealing account existence."""
+    payload = request.get_json(silent=True) or {}
+    email = str(payload.get("email", "")).strip().lower()
+    if not EMAIL_PATTERN.fullmatch(email):
+        return jsonify({"error": "Enter a valid email address"}), 400
+    if not all(current_app.config.get(item) for item in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM")):
+        return jsonify({"error": "Password reset email is not configured on this server"}), 503
+    user = database.local_user_by_email(email)
+    if user is not None and user.password_hash:
+        token = _reset_serializer().dumps({"email": user.email, "user_id": user.id})
+        try:
+            _send_password_reset(user.email, token)
+        except OSError:
+            current_app.logger.exception("Password reset email could not be sent")
+            return jsonify({"error": "Password reset email could not be sent. Please try again later."}), 503
+    return jsonify({"message": "If an account exists for this email, a reset link has been sent."}), 202
+
+
+@auth_bp.route("/reset-password", methods=["POST"])
+def reset_password():
+    """Accept a valid, short-lived email reset token and replace the password."""
+    payload = request.get_json(silent=True) or {}
+    password, error = _valid_new_password(payload.get("password"))
+    if error:
+        return jsonify({"error": error[0]}), error[1]
+    try:
+        reset_data = _reset_serializer().loads(str(payload.get("token", "")), max_age=3600)
+    except (BadSignature, SignatureExpired):
+        return jsonify({"error": "This password reset link is invalid or has expired"}), 400
+    user = database.local_user_by_email(reset_data.get("email"))
+    if user is None or user.id != reset_data.get("user_id"):
+        return jsonify({"error": "This password reset link is invalid or has expired"}), 400
+    database.update_password(user.id, generate_password_hash(password))
+    return jsonify({"message": "Password reset successfully. You can now sign in."})
+
+
+@auth_bp.route("/change-password", methods=["POST"])
+@login_required
+def change_password():
+    """Allow a signed-in local user to safely choose a new password."""
+    payload = request.get_json(silent=True) or {}
+    password, error = _valid_new_password(payload.get("new_password"))
+    if error:
+        return jsonify({"error": error[0]}), error[1]
+    user = database.local_user_by_email(session["user"]["email"])
+    if user is None or not user.password_hash:
+        return jsonify({"error": "This account uses Google sign-in and has no local password"}), 400
+    if not check_password_hash(user.password_hash, str(payload.get("current_password", ""))):
+        return jsonify({"error": "Current password is incorrect"}), 401
+    database.update_password(user.id, generate_password_hash(password))
+    return jsonify({"message": "Password updated successfully"})
 
 
 @auth_bp.route("/google", methods=["GET"])
@@ -59,14 +276,7 @@ def google_callback():
         return jsonify({"error": "Google did not return a verified email address"}), 403
 
     user = database.upsert_google_user(profile)
-    session.clear()
-    session.permanent = True
-    session["user"] = {
-        "id": user.id,
-        "name": user.display_name,
-        "email": user.email,
-        "picture": user.picture_url,
-    }
+    _sign_in(user)
     # Tokens are intentionally not stored in the browser session; this project
     # only needs identity, not access to a user's Google resources.
     return redirect(current_app.config["FRONTEND_URL"])
@@ -86,12 +296,41 @@ def current_user():
 def profile():
     """Return the signed-in profile with durable personal activity totals."""
     user = session["user"]
-    return jsonify(
-        {
-            "user": user,
-            "stats": database.profile_stats(user["email"]),
-        }
-    )
+    account = database.account_details(user["email"])
+    return jsonify({"user": account or user, "stats": database.profile_stats(user["email"])})
+
+
+@auth_bp.route("/admin/users", methods=["GET"])
+@login_required
+@admin_required
+def admin_users():
+    """List accounts for the protected administrator dashboard."""
+    return jsonify({"users": database.list_users()})
+
+
+@auth_bp.route("/admin/activity", methods=["GET"])
+@login_required
+@admin_required
+def admin_activity():
+    """Return the latest operational audit events for the admin dashboard."""
+    events = AuditLogger().list_events()
+    return jsonify({"events": [event.to_dict() for event in events[-50:][::-1]]})
+
+
+@auth_bp.route("/admin/users/<user_id>", methods=["DELETE"])
+@login_required
+@admin_required
+def admin_delete_user(user_id: str):
+    """Delete a non-admin user and their personal history by explicit admin action."""
+    if user_id == session["user"]["id"]:
+        return jsonify({"error": "An administrator cannot delete their own account"}), 400
+    target = next((user for user in database.list_users() if user["id"] == user_id), None)
+    if target is None:
+        return jsonify({"error": "User not found"}), 404
+    if target["role"] == "admin":
+        return jsonify({"error": "Administrator accounts cannot be removed here"}), 403
+    database.delete_user(user_id)
+    return jsonify({"message": "User account and associated activity were removed"})
 
 
 @auth_bp.route("/logout", methods=["POST"])

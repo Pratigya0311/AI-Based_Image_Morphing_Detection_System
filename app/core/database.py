@@ -9,10 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator, Optional
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, create_engine, select
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, create_engine, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 from sqlalchemy.pool import NullPool
+from werkzeug.security import generate_password_hash
 
 
 def _now() -> datetime:
@@ -44,6 +45,8 @@ class UserRecord(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(255))
     picture_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    role: Mapped[str] = mapped_column(String(32), default="user", server_default="user", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     last_login_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -63,6 +66,18 @@ class AnalysisRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     user: Mapped[UserRecord] = relationship(back_populates="analyses")
+
+
+class PendingRegistration(Base):
+    """Server-side registration details awaiting email verification."""
+
+    __tablename__ = "pending_registrations"
+
+    token: Mapped[str] = mapped_column(String(128), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class BatchRecord(Base):
@@ -128,6 +143,17 @@ class Database:
         if self._engine is None:
             self.configure()
         Base.metadata.create_all(self._engine)
+        # ``create_all`` creates tables but does not add a newly introduced
+        # column to databases that already exist. This tiny additive migration
+        # keeps local SQLite and deployed PostgreSQL project databases usable.
+        assert self._engine is not None
+        user_columns = {column["name"] for column in inspect(self._engine).get_columns("users")}
+        if "password_hash" not in user_columns:
+            with self._engine.begin() as connection:
+                connection.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)"))
+        if "role" not in user_columns:
+            with self._engine.begin() as connection:
+                connection.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(32) DEFAULT 'user'"))
 
     @contextmanager
     def session(self) -> Generator[Session, None, None]:
@@ -148,18 +174,151 @@ class Database:
         with self.session() as session:
             user = session.scalar(select(UserRecord).where(UserRecord.google_subject_id == profile["sub"]))
             if user is None:
+                user = session.scalar(select(UserRecord).where(UserRecord.email == profile["email"].lower()))
+            if user is None:
                 user = UserRecord(
-                    id=str(uuid.uuid4()), google_subject_id=profile["sub"], email=profile["email"],
+                    id=str(uuid.uuid4()), google_subject_id=profile["sub"], email=profile["email"].lower(),
                     display_name=profile.get("name") or profile["email"], picture_url=profile.get("picture"),
                 )
                 session.add(user)
             else:
-                user.email = profile["email"]
+                user.google_subject_id = profile["sub"]
+                user.email = profile["email"].lower()
                 user.display_name = profile.get("name") or profile["email"]
                 user.picture_url = profile.get("picture")
                 user.last_login_at = _now()
             session.flush()
             return user
+
+    def create_local_user(self, name: str, email: str, password_hash: str) -> Optional[UserRecord]:
+        """Create an email/password user, returning None when the email exists."""
+        normalized_email = email.lower()
+        with self.session() as session:
+            existing = session.scalar(select(UserRecord).where(UserRecord.email == normalized_email))
+            if existing is not None:
+                return None
+            user = UserRecord(
+                id=str(uuid.uuid4()),
+                # Older project databases require this legacy provider field;
+                # a local identifier keeps it unique without storing secrets.
+                google_subject_id=f"local:{uuid.uuid4()}",
+                email=normalized_email,
+                display_name=name,
+                password_hash=password_hash,
+            )
+            session.add(user)
+            session.flush()
+            return user
+
+    def create_pending_registration(self, name: str, email: str, password_hash: str) -> str:
+        """Replace any pending request for an email and return a random verification token."""
+        normalized_email = email.lower()
+        token = uuid.uuid4().hex
+        with self.session() as session:
+            pending = session.scalar(select(PendingRegistration).where(PendingRegistration.email == normalized_email))
+            if pending is not None:
+                session.delete(pending)
+                session.flush()
+            session.add(PendingRegistration(token=token, display_name=name, email=normalized_email, password_hash=password_hash))
+        return token
+
+    def consume_pending_registration(self, token: str, max_age_seconds: int = 3600) -> Optional[UserRecord]:
+        """Atomically activate a non-expired pending registration."""
+        with self.session() as session:
+            pending = session.get(PendingRegistration, token)
+            if pending is None or (_now() - pending.created_at).total_seconds() > max_age_seconds:
+                if pending is not None:
+                    session.delete(pending)
+                return None
+            if session.scalar(select(UserRecord).where(UserRecord.email == pending.email)) is not None:
+                session.delete(pending)
+                return None
+            user = UserRecord(
+                id=str(uuid.uuid4()), google_subject_id=f"local:{uuid.uuid4()}", email=pending.email,
+                display_name=pending.display_name, password_hash=pending.password_hash,
+            )
+            session.add(user)
+            session.delete(pending)
+            session.flush()
+            return user
+
+    def ensure_admin(self, email: Optional[str], initial_password: Optional[str]) -> None:
+        """Create or promote the deployment-configured admin without source credentials."""
+        if not email or not initial_password:
+            return
+        normalized_email = email.strip().lower()
+        with self.session() as session:
+            user = session.scalar(select(UserRecord).where(UserRecord.email == normalized_email))
+            if user is None:
+                user = UserRecord(
+                    id=str(uuid.uuid4()), google_subject_id=f"local:{uuid.uuid4()}",
+                    email=normalized_email, display_name="Administrator",
+                    password_hash=generate_password_hash(initial_password), role="admin",
+                )
+                session.add(user)
+            else:
+                user.role = "admin"
+                if not user.password_hash:
+                    user.password_hash = generate_password_hash(initial_password)
+
+    def list_users(self) -> list[dict]:
+        with self.session() as session:
+            users = session.scalars(select(UserRecord).order_by(UserRecord.created_at.desc())).all()
+            return [
+                {
+                    "id": user.id, "name": user.display_name, "email": user.email,
+                    "role": user.role, "created_at": user.created_at.isoformat(),
+                    "last_signed_in_at": user.last_login_at.isoformat(),
+                }
+                for user in users
+            ]
+
+    def delete_user(self, user_id: str) -> bool:
+        with self.session() as session:
+            user = session.get(UserRecord, user_id)
+            if user is None:
+                return False
+            for record in session.scalars(select(AnalysisRecord).where(AnalysisRecord.user_id == user_id)):
+                session.delete(record)
+            for record in session.scalars(select(BatchRecord).where(BatchRecord.user_id == user_id)):
+                session.delete(record)
+            for event in session.scalars(select(AuditEventRecord).where(AuditEventRecord.user_id == user_id)):
+                session.delete(event)
+            session.delete(user)
+            return True
+
+    def local_user_by_email(self, email: str) -> Optional[UserRecord]:
+        with self.session() as session:
+            return session.scalar(select(UserRecord).where(UserRecord.email == email.lower()))
+
+    def mark_logged_in(self, user_id: str) -> None:
+        with self.session() as session:
+            user = session.get(UserRecord, user_id)
+            if user is not None:
+                user.last_login_at = _now()
+
+    def account_details(self, email: str) -> Optional[dict]:
+        """Return non-sensitive account fields for the signed-in profile."""
+        with self.session() as session:
+            user = session.scalar(select(UserRecord).where(UserRecord.email == email.lower()))
+            if user is None:
+                return None
+            return {
+                "name": user.display_name,
+                "email": user.email,
+                "picture": user.picture_url,
+                "has_password": bool(user.password_hash),
+                "role": user.role,
+                "last_signed_in_at": user.last_login_at.isoformat(),
+            }
+
+    def update_password(self, user_id: str, password_hash: str) -> bool:
+        with self.session() as session:
+            user = session.get(UserRecord, user_id)
+            if user is None:
+                return False
+            user.password_hash = password_hash
+            return True
 
     def user_by_email(self, email: Optional[str]) -> Optional[UserRecord]:
         if not email:
