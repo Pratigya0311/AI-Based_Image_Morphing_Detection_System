@@ -12,6 +12,7 @@ from authlib.integrations.flask_client import OAuth
 from flask import Blueprint, current_app, jsonify, redirect, request, session
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
+import requests
 
 from app.core.database import database
 from app.modules.audit import AuditLogger
@@ -108,47 +109,66 @@ def _reset_serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="password-reset-v1")
 
 
-def _send_password_reset(email: str, token: str) -> bool:
-    """Send an expiring reset link through configured deployment SMTP."""
+def _send_email(email: str, subject: str, content: str) -> None:
+    """Send transactional mail through Resend HTTPS or local SMTP fallback.
+
+    Render free instances block SMTP ports, so production can use Resend's
+    HTTPS API. SMTP remains available for local development and other hosts.
+    """
+    resend_key = current_app.config.get("RESEND_API_KEY")
+    resend_from = current_app.config.get("RESEND_FROM")
+    if resend_key:
+        if not resend_from:
+            raise RuntimeError("RESEND_FROM must be configured with RESEND_API_KEY")
+        try:
+            response = requests.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {resend_key}"},
+                json={"from": resend_from, "to": [email], "subject": subject, "text": content},
+                timeout=15,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError("Transactional email API request failed") from exc
+        return
+
     required = ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM")
     if not all(current_app.config.get(item) for item in required):
-        return False
-    reset_url = f"{current_app.config['FRONTEND_URL'].rstrip('/')}?reset_token={quote(token)}"
+        raise RuntimeError("Email delivery is not configured")
     message = EmailMessage()
-    message["Subject"] = "Reset your AI Morph Detection password"
+    message["Subject"] = subject
     message["From"] = current_app.config["SMTP_FROM"]
     message["To"] = email
-    message.set_content(
-        "A password reset was requested for your AI Morph Detection account.\n\n"
-        f"Use this link within one hour: {reset_url}\n\n"
-        "If you did not request this, you can ignore this email."
-    )
+    message.set_content(content)
     with smtplib.SMTP(current_app.config["SMTP_HOST"], current_app.config["SMTP_PORT"], timeout=15) as server:
         server.starttls()
         server.login(current_app.config["SMTP_USERNAME"], current_app.config["SMTP_PASSWORD"])
         server.send_message(message)
+
+
+def _send_password_reset(email: str, token: str) -> bool:
+    """Send an expiring reset link through the configured transactional email provider."""
+    reset_url = f"{current_app.config['FRONTEND_URL'].rstrip('/')}?reset_token={quote(token)}"
+    _send_email(
+        email,
+        "Reset your AI Morph Detection password",
+        "A password reset was requested for your AI Morph Detection account.\n\n"
+        f"Use this link within one hour: {reset_url}\n\n"
+        "If you did not request this, you can ignore this email.",
+    )
     return True
 
 
 def _send_verification_email(email: str, token: str) -> None:
     """Email a one-hour account-verification link before a local account exists."""
-    required = ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM")
-    if not all(current_app.config.get(item) for item in required):
-        raise RuntimeError("Email verification is not configured")
     verify_url = f"{current_app.config['FRONTEND_URL'].rstrip('/')}?verify_token={quote(token)}"
-    message = EmailMessage()
-    message["Subject"] = "Verify your AI Morph Detection account"
-    message["From"] = current_app.config["SMTP_FROM"]
-    message["To"] = email
-    message.set_content(
+    _send_email(
+        email,
+        "Verify your AI Morph Detection account",
         "Verify your email to activate your AI Morph Detection account.\n\n"
         f"Use this link within one hour: {verify_url}\n\n"
-        "If you did not create this account, you can ignore this email."
+        "If you did not create this account, you can ignore this email.",
     )
-    with smtplib.SMTP(current_app.config["SMTP_HOST"], current_app.config["SMTP_PORT"], timeout=15) as server:
-        server.starttls()
-        server.login(current_app.config["SMTP_USERNAME"], current_app.config["SMTP_PASSWORD"])
-        server.send_message(message)
 
 
 @auth_bp.route("/register", methods=["POST"])
@@ -214,7 +234,7 @@ def forgot_password():
         token = _reset_serializer().dumps({"email": user.email, "user_id": user.id})
         try:
             _send_password_reset(user.email, token)
-        except OSError:
+        except (OSError, RuntimeError):
             current_app.logger.exception("Password reset email could not be sent")
             return jsonify({"error": "Password reset email could not be sent. Please try again later."}), 503
     return jsonify({"message": "If an account exists for this email, a reset link has been sent."}), 202
