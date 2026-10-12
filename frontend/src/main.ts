@@ -12,6 +12,9 @@ app.innerHTML = applicationTemplate()
 let singleFile: File | null = null
 let singlePreview = ''
 let batchFiles: File[] = []
+let adminAuthorized = false
+let adminDashboardLoaded = false
+let adminDashboardLoading = false
 
 const allowedTypes = ['image/jpeg', 'image/png', 'image/bmp']
 
@@ -42,25 +45,26 @@ function analysisFailure(error: unknown) {
   return { title: 'Analysis could not be completed', detail: 'Please try again with a clear portrait image in a moment.' }
 }
 
-async function showAdminDashboard() {
+async function showAdminDashboard(force = false) {
+  if (!adminAuthorized || adminDashboardLoading || (adminDashboardLoaded && !force)) return
+  adminDashboardLoading = true
+  const root = document.querySelector<HTMLElement>('#admin-root')!
+  root.innerHTML = '<section class="admin-page"><p class="admin-loading"><i class="spinner"></i> Loading administration data...</p></section>'
   try {
     const [usersResponse, activityResponse] = await Promise.all([api.adminUsers(), api.adminActivity()])
     const users = usersResponse.users.map(user => `<tr><td>${escapeHtml(user.name)}</td><td>${escapeHtml(user.email)}</td><td>${escapeHtml(user.role)}</td><td>${new Date(user.last_signed_in_at).toLocaleString()}</td><td>${user.role === 'admin' ? 'Protected' : `<button class="remove-user" data-user-id="${user.id}">Remove</button>`}</td></tr>`).join('')
     const activity = activityResponse.events.slice(0, 12).map(event => `<li><strong>${escapeHtml(event.event_type.replaceAll('_', ' '))}</strong><span>${escapeHtml(event.actor_email ?? 'System')} · ${new Date(event.timestamp).toLocaleString()}</span></li>`).join('') || '<li><span>No activity recorded yet.</span></li>'
-    const page = document.querySelector<HTMLElement>('#top')!
-    page.innerHTML = `<section class="admin-page"><header><div><p class="eyebrow">ADMINISTRATOR AREA</p><h1>System administration</h1><p>Manage registered users and review recent protected activity.</p></div></header><section class="admin-grid"><article><h2>Registered users <span>${usersResponse.users.length}</span></h2><div class="admin-table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last sign-in</th><th>Action</th></tr></thead><tbody>${users}</tbody></table></div></article><article><h2>Recent activity</h2><ol class="admin-activity">${activity}</ol></article></section></section>`
-    document.querySelectorAll<HTMLAnchorElement>('[data-page]').forEach(link => link.classList.remove('active'))
-    document.querySelector('#admin-nav-link')?.classList.add('active')
-    document.querySelectorAll<HTMLAnchorElement>('.nav nav [data-page], .nav .brand').forEach(link => link.addEventListener('click', event => {
-      event.preventDefault()
-      window.location.hash = link.getAttribute('href')?.replace('#', '') || 'home'
-      window.location.reload()
-    }))
-    document.querySelectorAll<HTMLButtonElement>('.remove-user').forEach(button => button.addEventListener('click', async () => {
+    root.innerHTML = `<section class="admin-page"><header><div><p class="eyebrow">ADMINISTRATOR AREA</p><h1>System administration</h1><p>Manage registered users and review recent protected activity.</p></div></header><section class="admin-grid"><article><h2>Registered users <span>${usersResponse.users.length}</span></h2><div class="admin-table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last sign-in</th><th>Action</th></tr></thead><tbody>${users}</tbody></table></div></article><article><h2>Recent activity</h2><ol class="admin-activity">${activity}</ol></article></section></section>`
+    adminDashboardLoaded = true
+    root.querySelectorAll<HTMLButtonElement>('.remove-user').forEach(button => button.addEventListener('click', async () => {
       if (!window.confirm('Remove this user and their analysis history permanently?')) return
-      try { await api.deleteUser(button.dataset.userId!); await showAdminDashboard() } catch (error) { window.alert(error instanceof Error ? error.message : 'Unable to remove user') }
+      try { await api.deleteUser(button.dataset.userId!); adminDashboardLoaded = false; await showAdminDashboard(true) } catch (error) { window.alert(error instanceof Error ? error.message : 'Unable to remove user') }
     }))
-  } catch (error) { showToast(error instanceof Error ? error.message : 'Unable to load the admin dashboard.') }
+  } catch (error) {
+    root.innerHTML = '<section class="admin-page"><h1>Administration data could not be loaded</h1><p>Check the backend connection and try again.</p><button class="button" id="retry-admin">Retry</button></section>'
+    root.querySelector('#retry-admin')?.addEventListener('click', () => { adminDashboardLoaded = false; void showAdminDashboard(true) })
+    showToast(error instanceof Error ? error.message : 'Unable to load the admin dashboard.')
+  } finally { adminDashboardLoading = false }
 }
 
 function selectSingle(file: File | null) {
@@ -152,13 +156,22 @@ api.health().then(() => { document.querySelector('#system-status')!.innerHTML = 
 
 function routeWorkspace() {
   const requestedRoute = window.location.hash.replace('#', '') || 'home'
-  const route = requestedRoute === 'analyze' ? 'analyze' : 'home'
+  const isAdminRoute = requestedRoute === 'admin' && adminAuthorized
+  const route = requestedRoute === 'analyze' ? 'analyze' : isAdminRoute ? 'admin' : 'home'
   const homeSections = ['.hero', '.project-credit', '.metrics', '.process']
   const analysis = document.querySelector<HTMLElement>('#analyze')!
   const isAnalysis = route === 'analyze'
+  document.querySelector<HTMLElement>('#top')!.classList.toggle('hidden', isAdminRoute)
+  document.querySelector<HTMLElement>('#admin-root')!.classList.toggle('hidden', !isAdminRoute)
   homeSections.forEach(selector => document.querySelector<HTMLElement>(selector)!.classList.toggle('hidden', isAnalysis))
   analysis.classList.toggle('hidden', !isAnalysis)
   document.querySelectorAll<HTMLAnchorElement>('[data-page]').forEach(link => link.classList.toggle('active', link.dataset.page === route))
+  document.querySelector('#admin-nav-link')?.classList.toggle('active', isAdminRoute)
+  if (isAdminRoute) {
+    if (!adminDashboardLoaded) void showAdminDashboard()
+    window.scrollTo({ top: 0, behavior: 'auto' })
+    return
+  }
   if (requestedRoute === 'how') window.setTimeout(() => document.querySelector('#how')?.scrollIntoView({ behavior: 'smooth' }), 0)
   else window.scrollTo({ top: 0, behavior: 'auto' })
 }
@@ -176,13 +189,13 @@ void api.profile().then(profile => {
   const lastSignedIn = profile.user.last_signed_in_at ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(profile.user.last_signed_in_at)) : 'Not available'
   menu.innerHTML = `<div class="account-info"><strong>${escapeHtml(profile.user.name)}</strong><span>${escapeHtml(profile.user.email)}</span><small>Last signed in: ${escapeHtml(lastSignedIn)}</small></div><div class="account-stats"><div><strong>${profile.stats.images_analyzed}</strong><span>Images analyzed</span></div><div><strong>${profile.stats.batches_created}</strong><span>Batches created</span></div><div><strong>${profile.stats.morphed_flags}</strong><span>Morph flags</span></div></div>${profile.user.role === 'admin' ? '<button class="account-secondary" id="admin-dashboard-button">Admin dashboard</button>' : ''}${profile.user.has_password ? '<button class="account-secondary" id="change-password-button">Change password</button><form class="account-password hidden" id="change-password-form"><input name="current_password" type="password" placeholder="Current password" required><input name="new_password" type="password" placeholder="New password (8+ characters)" minlength="8" required><button type="submit">Update password</button></form>' : '<p class="account-provider">Signed in with Google</p>'}<button id="logout-button">Sign out</button>`
   if (profile.user.role === 'admin') {
+    adminAuthorized = true
     const navigation = document.querySelector<HTMLElement>('.nav nav')!
     navigation.insertAdjacentHTML('beforeend', '<a href="#admin" id="admin-nav-link">Admin</a>')
-    document.querySelector('#admin-nav-link')!.addEventListener('click', event => { event.preventDefault(); void showAdminDashboard() })
-    if (window.location.hash === '#admin') void showAdminDashboard()
   }
+  if (window.location.hash === '#admin') routeWorkspace()
   document.querySelector('#account-button')!.addEventListener('click', () => menu.classList.toggle('hidden'))
-  document.querySelector('#admin-dashboard-button')?.addEventListener('click', () => { window.location.hash = 'admin'; void showAdminDashboard() })
+  document.querySelector('#admin-dashboard-button')?.addEventListener('click', () => { window.location.hash = 'admin' })
   document.querySelector('#change-password-button')?.addEventListener('click', () => document.querySelector('#change-password-form')!.classList.toggle('hidden'))
   document.querySelector<HTMLFormElement>('#change-password-form')?.addEventListener('submit', async event => {
     event.preventDefault(); const form = event.currentTarget as HTMLFormElement; const values = new FormData(form)
@@ -213,7 +226,11 @@ void api.profile().then(profile => {
   document.querySelector('#back-to-login')?.addEventListener('click', () => showPanel('login'))
   document.querySelector<HTMLFormElement>('#login-form')?.addEventListener('submit', async event => {
     event.preventDefault(); const form = event.currentTarget as HTMLFormElement
-    try { await api.login(formValue(form, 'email'), formValue(form, 'password')); window.location.reload() } catch (error) { showMessage(error instanceof Error ? error.message : 'Unable to sign in') }
+    try {
+      await api.login(formValue(form, 'email'), formValue(form, 'password'))
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#home`)
+      window.location.reload()
+    } catch (error) { showMessage(error instanceof Error ? error.message : 'Unable to sign in') }
   })
   document.querySelector<HTMLFormElement>('#register-form')?.addEventListener('submit', async event => {
     event.preventDefault(); const form = event.currentTarget as HTMLFormElement; const password = formValue(form, 'password')
