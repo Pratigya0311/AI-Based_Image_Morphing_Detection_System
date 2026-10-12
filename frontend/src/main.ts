@@ -25,6 +25,44 @@ function size(bytes: number) { return bytes > 1048576 ? `${(bytes / 1048576).toF
 function showToast(message: string) { const toast = document.querySelector<HTMLElement>('#toast')!; toast.textContent = message; toast.classList.remove('hidden'); setTimeout(() => toast.classList.add('hidden'), 4300) }
 function setButtonLoading(button: HTMLButtonElement, label: string, loading: boolean) { button.disabled = loading; button.innerHTML = loading ? `<i class="spinner"></i> ${label}` : label }
 
+function analysisFailure(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : ''
+  if (message.includes('no detectable face') || message.includes('face not detected')) {
+    return { title: 'Face not detected', detail: 'We could not find one clear face in this image. Upload a well-lit, front-facing portrait with the face clearly visible.' }
+  }
+  if (message.includes('multiple faces')) {
+    return { title: 'Multiple faces detected', detail: 'Please upload an image containing only one person for an accurate analysis.' }
+  }
+  if (message.includes('quality is too low') || message.includes('blurry')) {
+    return { title: 'Image quality is too low', detail: 'Use a sharper, well-lit image with a clearly visible face, then try again.' }
+  }
+  if (message.includes('invalid image') || message.includes('could not be decoded')) {
+    return { title: 'Image could not be processed', detail: 'Choose a valid JPG, PNG, or BMP image and try again.' }
+  }
+  return { title: 'Analysis could not be completed', detail: 'Please try again with a clear portrait image in a moment.' }
+}
+
+async function showAdminDashboard() {
+  try {
+    const [usersResponse, activityResponse] = await Promise.all([api.adminUsers(), api.adminActivity()])
+    const users = usersResponse.users.map(user => `<tr><td>${escapeHtml(user.name)}</td><td>${escapeHtml(user.email)}</td><td>${escapeHtml(user.role)}</td><td>${new Date(user.last_signed_in_at).toLocaleString()}</td><td>${user.role === 'admin' ? 'Protected' : `<button class="remove-user" data-user-id="${user.id}">Remove</button>`}</td></tr>`).join('')
+    const activity = activityResponse.events.slice(0, 12).map(event => `<li><strong>${escapeHtml(event.event_type.replaceAll('_', ' '))}</strong><span>${escapeHtml(event.actor_email ?? 'System')} · ${new Date(event.timestamp).toLocaleString()}</span></li>`).join('') || '<li><span>No activity recorded yet.</span></li>'
+    const page = document.querySelector<HTMLElement>('#top')!
+    page.innerHTML = `<section class="admin-page"><header><div><p class="eyebrow">ADMINISTRATOR AREA</p><h1>System administration</h1><p>Manage registered users and review recent protected activity.</p></div></header><section class="admin-grid"><article><h2>Registered users <span>${usersResponse.users.length}</span></h2><div class="admin-table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last sign-in</th><th>Action</th></tr></thead><tbody>${users}</tbody></table></div></article><article><h2>Recent activity</h2><ol class="admin-activity">${activity}</ol></article></section></section>`
+    document.querySelectorAll<HTMLAnchorElement>('[data-page]').forEach(link => link.classList.remove('active'))
+    document.querySelector('#admin-nav-link')?.classList.add('active')
+    document.querySelectorAll<HTMLAnchorElement>('.nav nav [data-page], .nav .brand').forEach(link => link.addEventListener('click', event => {
+      event.preventDefault()
+      window.location.hash = link.getAttribute('href')?.replace('#', '') || 'home'
+      window.location.reload()
+    }))
+    document.querySelectorAll<HTMLButtonElement>('.remove-user').forEach(button => button.addEventListener('click', async () => {
+      if (!window.confirm('Remove this user and their analysis history permanently?')) return
+      try { await api.deleteUser(button.dataset.userId!); await showAdminDashboard() } catch (error) { window.alert(error instanceof Error ? error.message : 'Unable to remove user') }
+    }))
+  } catch (error) { showToast(error instanceof Error ? error.message : 'Unable to load the admin dashboard.') }
+}
+
 function selectSingle(file: File | null) {
   if (!file || !validFiles([file])) return
   singleFile = file
@@ -57,8 +95,9 @@ async function analyzeSingle() {
     document.querySelector('#single-result')!.classList.remove('hidden'); empty.classList.add('hidden')
     document.querySelector('#single-badge')!.textContent = 'Analysis complete'
   } catch (error) {
-    showToast(error instanceof Error ? error.message : 'Unable to reach the analysis service.')
-    empty.innerHTML = `${icon('image')}<h4>Analysis unavailable</h4><p>Check that the Flask backend is running, then try again.</p>`
+    const failure = analysisFailure(error)
+    showToast(failure.title)
+    empty.innerHTML = `${icon('image')}<h4>${failure.title}</h4><p>${failure.detail}</p>`
   } finally { setButtonLoading(button, `Analyze another image ${icon('arrow')}`, false) }
 }
 
@@ -85,8 +124,8 @@ async function analyzeBatch() {
     document.querySelector('#batch-result')!.classList.remove('hidden'); empty.classList.add('hidden')
     document.querySelector('#batch-badge')!.textContent = 'PDF report ready'
   } catch (error) {
-    showToast(error instanceof Error ? error.message : 'The batch could not be processed.')
-    empty.innerHTML = `${icon('files')}<h4>Batch analysis unavailable</h4><p>Check that the Flask backend and model assets are available, then try again.</p>`
+    showToast('Batch analysis could not be completed')
+    empty.innerHTML = `${icon('files')}<h4>Batch analysis could not be completed</h4><p>Review your images and try again. Each image should be clear and contain one visible face.</p>`
   } finally { setButtonLoading(button, `Analyze batch & generate PDF ${icon('arrow')}`, false) }
 }
 
@@ -111,20 +150,21 @@ document.querySelector('#batch-analyze')!.addEventListener('click', analyzeBatch
 
 api.health().then(() => { document.querySelector('#system-status')!.innerHTML = '<i></i>System online' }).catch(() => { document.querySelector('#system-status')!.textContent = 'Backend offline' })
 
-const sectionLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>('[data-section]'))
-const observedSections = sectionLinks
-  .map(link => document.getElementById(link.dataset.section ?? ''))
-  .filter((section): section is HTMLElement => section !== null)
+function routeWorkspace() {
+  const requestedRoute = window.location.hash.replace('#', '') || 'home'
+  const route = requestedRoute === 'analyze' ? 'analyze' : 'home'
+  const homeSections = ['.hero', '.project-credit', '.metrics', '.process']
+  const analysis = document.querySelector<HTMLElement>('#analyze')!
+  const isAnalysis = route === 'analyze'
+  homeSections.forEach(selector => document.querySelector<HTMLElement>(selector)!.classList.toggle('hidden', isAnalysis))
+  analysis.classList.toggle('hidden', !isAnalysis)
+  document.querySelectorAll<HTMLAnchorElement>('[data-page]').forEach(link => link.classList.toggle('active', link.dataset.page === route))
+  if (requestedRoute === 'how') window.setTimeout(() => document.querySelector('#how')?.scrollIntoView({ behavior: 'smooth' }), 0)
+  else window.scrollTo({ top: 0, behavior: 'auto' })
+}
 
-const sectionObserver = new IntersectionObserver(entries => {
-  const visible = entries
-    .filter(entry => entry.isIntersecting)
-    .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0]
-  if (!visible) return
-  sectionLinks.forEach(link => link.classList.toggle('active', link.dataset.section === visible.target.id))
-}, { rootMargin: '-22% 0px -58% 0px', threshold: [0.1, 0.35, 0.6] })
-
-observedSections.forEach(section => sectionObserver.observe(section))
+window.addEventListener('hashchange', routeWorkspace)
+routeWorkspace()
 
 void api.profile().then(profile => {
   const initial = profile.user.name.trim().charAt(0).toUpperCase()
@@ -133,10 +173,61 @@ void api.profile().then(profile => {
   avatar.textContent = initial; name.textContent = profile.user.name.split(' ')[0]
   if (profile.user.picture) avatar.style.backgroundImage = `url("${profile.user.picture}")`
   const menu = document.querySelector<HTMLElement>('#account-menu')!
-  menu.innerHTML = `<div class="account-info"><strong>${escapeHtml(profile.user.name)}</strong><span>${escapeHtml(profile.user.email)}</span></div><div class="account-stats"><div><strong>${profile.stats.images_analyzed}</strong><span>Images analyzed</span></div><div><strong>${profile.stats.batches_created}</strong><span>Batches created</span></div><div><strong>${profile.stats.morphed_flags}</strong><span>Morph flags</span></div></div><button id="logout-button">Sign out</button>`
+  const lastSignedIn = profile.user.last_signed_in_at ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(profile.user.last_signed_in_at)) : 'Not available'
+  menu.innerHTML = `<div class="account-info"><strong>${escapeHtml(profile.user.name)}</strong><span>${escapeHtml(profile.user.email)}</span><small>Last signed in: ${escapeHtml(lastSignedIn)}</small></div><div class="account-stats"><div><strong>${profile.stats.images_analyzed}</strong><span>Images analyzed</span></div><div><strong>${profile.stats.batches_created}</strong><span>Batches created</span></div><div><strong>${profile.stats.morphed_flags}</strong><span>Morph flags</span></div></div>${profile.user.role === 'admin' ? '<button class="account-secondary" id="admin-dashboard-button">Admin dashboard</button>' : ''}${profile.user.has_password ? '<button class="account-secondary" id="change-password-button">Change password</button><form class="account-password hidden" id="change-password-form"><input name="current_password" type="password" placeholder="Current password" required><input name="new_password" type="password" placeholder="New password (8+ characters)" minlength="8" required><button type="submit">Update password</button></form>' : '<p class="account-provider">Signed in with Google</p>'}<button id="logout-button">Sign out</button>`
+  if (profile.user.role === 'admin') {
+    const navigation = document.querySelector<HTMLElement>('.nav nav')!
+    navigation.insertAdjacentHTML('beforeend', '<a href="#admin" id="admin-nav-link">Admin</a>')
+    document.querySelector('#admin-nav-link')!.addEventListener('click', event => { event.preventDefault(); void showAdminDashboard() })
+    if (window.location.hash === '#admin') void showAdminDashboard()
+  }
   document.querySelector('#account-button')!.addEventListener('click', () => menu.classList.toggle('hidden'))
+  document.querySelector('#admin-dashboard-button')?.addEventListener('click', () => { window.location.hash = 'admin'; void showAdminDashboard() })
+  document.querySelector('#change-password-button')?.addEventListener('click', () => document.querySelector('#change-password-form')!.classList.toggle('hidden'))
+  document.querySelector<HTMLFormElement>('#change-password-form')?.addEventListener('submit', async event => {
+    event.preventDefault(); const form = event.currentTarget as HTMLFormElement; const values = new FormData(form)
+    try { await api.changePassword(String(values.get('current_password') ?? ''), String(values.get('new_password') ?? '')); form.reset(); form.classList.add('hidden'); showToast('Password updated successfully.') } catch (error) { showToast(error instanceof Error ? error.message : 'Unable to update password.') }
+  })
   document.querySelector('#logout-button')!.addEventListener('click', async () => { await api.logout(); window.location.reload() })
 }).catch(() => {
-  app.innerHTML = loginTemplate()
-  document.querySelector('#google-login')!.addEventListener('click', () => window.location.assign(api.loginUrl))
+  const resetToken = new URLSearchParams(window.location.search).get('reset_token') ?? ''
+  const verifyToken = new URLSearchParams(window.location.search).get('verify_token') ?? ''
+  if (verifyToken) {
+    app.innerHTML = loginTemplate('Verifying your email address...')
+    void api.verifyEmail(verifyToken).then(() => { window.history.replaceState({}, '', window.location.pathname); window.location.reload() }).catch(error => {
+      app.innerHTML = loginTemplate(error instanceof Error ? error.message : 'Unable to verify this email link.')
+    })
+    return
+  }
+  app.innerHTML = loginTemplate('', resetToken)
+  const message = document.querySelector<HTMLElement>('#auth-message')!
+  const showMessage = (value: string, error = true) => { message.textContent = value; message.classList.toggle('error', error) }
+  const formValue = (form: HTMLFormElement, name: string) => String(new FormData(form).get(name) ?? '')
+  const showPanel = (panel: 'login' | 'register' | 'forgot') => {
+    document.querySelectorAll<HTMLElement>('.local-auth').forEach(form => form.classList.toggle('hidden', form.id !== `${panel}-form`))
+    document.querySelectorAll<HTMLButtonElement>('.auth-tab').forEach(tab => tab.classList.toggle('active', tab.dataset.auth === panel))
+    message.textContent = ''
+  }
+  document.querySelectorAll<HTMLButtonElement>('.auth-tab').forEach(tab => tab.addEventListener('click', () => showPanel(tab.dataset.auth as 'login' | 'register')))
+  document.querySelector('#forgot-password')?.addEventListener('click', () => showPanel('forgot'))
+  document.querySelector('#back-to-login')?.addEventListener('click', () => showPanel('login'))
+  document.querySelector<HTMLFormElement>('#login-form')?.addEventListener('submit', async event => {
+    event.preventDefault(); const form = event.currentTarget as HTMLFormElement
+    try { await api.login(formValue(form, 'email'), formValue(form, 'password')); window.location.reload() } catch (error) { showMessage(error instanceof Error ? error.message : 'Unable to sign in') }
+  })
+  document.querySelector<HTMLFormElement>('#register-form')?.addEventListener('submit', async event => {
+    event.preventDefault(); const form = event.currentTarget as HTMLFormElement; const password = formValue(form, 'password')
+    if (password !== formValue(form, 'confirm_password')) { showMessage('Passwords do not match'); return }
+    try { const response = await api.register(formValue(form, 'name'), formValue(form, 'email'), password); if (response.authenticated) window.location.reload(); else showMessage(response.message ?? 'Check your email to verify your account.', false) } catch (error) { showMessage(error instanceof Error ? error.message : 'Unable to create account') }
+  })
+  document.querySelector<HTMLFormElement>('#forgot-form')?.addEventListener('submit', async event => {
+    event.preventDefault(); const form = event.currentTarget as HTMLFormElement
+    try { const response = await api.forgotPassword(formValue(form, 'email')); showMessage(response.message, false) } catch (error) { showMessage(error instanceof Error ? error.message : 'Unable to send reset link') }
+  })
+  document.querySelector<HTMLFormElement>('#reset-form')?.addEventListener('submit', async event => {
+    event.preventDefault(); const form = event.currentTarget as HTMLFormElement; const password = formValue(form, 'password')
+    if (password !== formValue(form, 'confirm_password')) { showMessage('Passwords do not match'); return }
+    try { const response = await api.resetPassword(resetToken, password); showMessage(response.message, false); window.setTimeout(() => { window.history.replaceState({}, '', window.location.pathname); window.location.reload() }, 1400) } catch (error) { showMessage(error instanceof Error ? error.message : 'Unable to reset password') }
+  })
+  document.querySelector('#google-login')?.addEventListener('click', () => window.location.assign(api.loginUrl))
 })

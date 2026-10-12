@@ -19,4 +19,4 @@ export type BatchResponse = {
   items: Array<{ filename: string; succeeded: boolean; result?: AnalysisResult; error?: string }>
 }
 
-export type AuditEvent = { event_type: string; outcome: string; timestamp: string }
+export type AuditEvent = { event_type: string; outcome: string; timestamp: string; actor_email?: string | null }

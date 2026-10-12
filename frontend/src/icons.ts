@@ -8,7 +8,7 @@ const icons: Record<IconName, string> = {
   arrow: '<svg viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>',
   close: '<svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>',
   files: '<svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 14h8M8 17h6"/></svg>',
-  mark: '<svg viewBox="0 0 32 32"><path d="M5.5 16c2.8-4.6 6.3-6.9 10.5-6.9S23.7 11.4 26.5 16c-2.8 4.6-6.3 6.9-10.5 6.9S8.3 20.6 5.5 16Z"/><circle cx="16" cy="16" r="3.25"/><path d="M16 4.5v2.2M16 25.3v2.2M4.5 16h2.2M25.3 16h2.2"/></svg>',
+  mark: '<svg viewBox="0 0 32 32"><path d="M7 10.5V7h3.5M21.5 7H25v3.5M25 21.5V25h-3.5M10.5 25H7v-3.5"/><path d="M11 13.2c.8-2.3 2.7-3.7 5-3.7s4.2 1.4 5 3.7v5.5c0 2.8-2.2 5.1-5 5.1s-5-2.3-5-5.1v-5.5Z"/><path d="M16 9.5v14.3"/></svg>',
 }
 
 export const icon = (name: IconName) => icons[name]

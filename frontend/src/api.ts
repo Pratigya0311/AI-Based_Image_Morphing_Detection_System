@@ -9,8 +9,17 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   me: () => request<{ authenticated: boolean; user: { name: string; email: string; picture?: string } }>('/api/auth/me'),
-  profile: () => request<{ user: { name: string; email: string; picture?: string }; stats: { images_analyzed: number; batches_created: number; morphed_flags: number } }>('/api/auth/profile'),
+  profile: () => request<{ user: { name: string; email: string; picture?: string; has_password?: boolean; role?: string; last_signed_in_at?: string }; stats: { images_analyzed: number; batches_created: number; morphed_flags: number } }>('/api/auth/profile'),
   loginUrl: '/api/auth/google',
+  login: (email: string, password: string) => request<{ authenticated: boolean }>('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) }),
+  register: (name: string, email: string, password: string) => request<{ authenticated?: boolean; message?: string }>('/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email, password }) }),
+  forgotPassword: (email: string) => request<{ message: string }>('/api/auth/forgot-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) }),
+  resetPassword: (token: string, password: string) => request<{ message: string }>('/api/auth/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, password }) }),
+  verifyEmail: (token: string) => request<{ authenticated: boolean }>('/api/auth/verify-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) }),
+  changePassword: (currentPassword: string, newPassword: string) => request<{ message: string }>('/api/auth/change-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }),
+  adminUsers: () => request<{ users: Array<{ id: string; name: string; email: string; role: string; created_at: string; last_signed_in_at: string }> }>('/api/auth/admin/users'),
+  adminActivity: () => request<{ events: AuditEvent[] }>('/api/auth/admin/activity'),
+  deleteUser: (id: string) => request<{ message: string }>(`/api/auth/admin/users/${id}`, { method: 'DELETE' }),
   logout: () => request<{ authenticated: boolean }>('/api/auth/logout', { method: 'POST' }),
   health: () => request<{ status: string }>('/api/analysis/health'),
   analyze: (file: File) => { const form = new FormData(); form.append('image', file); return request<AnalysisResponse>('/api/analysis/analyze', { method: 'POST', body: form }) },
