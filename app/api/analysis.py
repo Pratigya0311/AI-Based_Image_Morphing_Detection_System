@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -27,7 +28,15 @@ pipeline: Optional[MorphAnalysisPipeline] = None
 def _get_pipeline() -> MorphAnalysisPipeline:
     global pipeline
     if pipeline is None:
-        pipeline = MorphAnalysisPipeline()
+        inference_space = os.getenv("HF_INFERENCE_SPACE", "").strip()
+        if inference_space:
+            # Keep authentication, acquisition, persistence, and reporting in
+            # Flask while running only the model pipeline on ZeroGPU.
+            from app.modules.inference.remote import HuggingFaceSpacePipeline
+
+            pipeline = HuggingFaceSpacePipeline(inference_space)
+        else:
+            pipeline = MorphAnalysisPipeline()
     return pipeline
 
 
