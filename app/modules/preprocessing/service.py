@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
+from app.core.model_assets import ModelAssetError, landmark_model_path
 from app.modules.feature_extraction.extractor import (
     IMAGENET_MEAN,
     IMAGENET_STD,
@@ -104,11 +105,13 @@ class LBFLandmarkDetector:
             raise RuntimeError(
                 "LBF landmarks require opencv-contrib-python; install project dependencies."
             )
-        path = (
-            Path(model_path)
-            if model_path
-            else Path(__file__).resolve().parents[3] / "models" / "landmarks" / "lbfmodel.yaml"
-        )
+        if model_path:
+            path = Path(model_path)
+        else:
+            try:
+                path = landmark_model_path()
+            except ModelAssetError as exc:
+                raise RuntimeError("LBF landmark model could not be prepared for analysis") from exc
         if not path.is_file():
             raise RuntimeError(f"LBF landmark model was not found: {path}")
         self.facemark = cv2.face.createFacemarkLBF()
