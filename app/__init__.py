@@ -36,6 +36,8 @@ def create_app():
         SMTP_USERNAME=os.getenv("SMTP_USERNAME"),
         SMTP_PASSWORD=os.getenv("SMTP_PASSWORD"),
         SMTP_FROM=os.getenv("SMTP_FROM"),
+        GOOGLE_APPS_SCRIPT_URL=os.getenv("GOOGLE_APPS_SCRIPT_URL"),
+        GOOGLE_APPS_SCRIPT_TOKEN=os.getenv("GOOGLE_APPS_SCRIPT_TOKEN"),
         RESEND_API_KEY=os.getenv("RESEND_API_KEY"),
         RESEND_FROM=os.getenv("RESEND_FROM"),
         EMAIL_VERIFICATION_REQUIRED=os.getenv("EMAIL_VERIFICATION_REQUIRED", "true").lower() == "true",

@@ -110,11 +110,37 @@ def _reset_serializer() -> URLSafeTimedSerializer:
 
 
 def _send_email(email: str, subject: str, content: str) -> None:
-    """Send transactional mail through Resend HTTPS or local SMTP fallback.
+    """Send transactional mail through Apps Script, Resend, or local SMTP.
 
-    Render free instances block SMTP ports, so production can use Resend's
-    HTTPS API. SMTP remains available for local development and other hosts.
+    Google Apps Script and Resend use HTTPS, so they work on hosts that block
+    SMTP ports. SMTP remains available as a local-development fallback.
     """
+    apps_script_url = current_app.config.get("GOOGLE_APPS_SCRIPT_URL")
+    apps_script_token = current_app.config.get("GOOGLE_APPS_SCRIPT_TOKEN")
+    if apps_script_url or apps_script_token:
+        if not (apps_script_url and apps_script_token):
+            raise RuntimeError(
+                "GOOGLE_APPS_SCRIPT_URL and GOOGLE_APPS_SCRIPT_TOKEN must both be configured"
+            )
+        try:
+            response = requests.post(
+                apps_script_url,
+                json={
+                    "token": apps_script_token,
+                    "to": email,
+                    "subject": subject,
+                    "text": content,
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise RuntimeError("Google Apps Script email request failed") from exc
+        if payload.get("ok") is not True:
+            raise RuntimeError("Google Apps Script declined the email request")
+        return
+
     resend_key = current_app.config.get("RESEND_API_KEY")
     resend_from = current_app.config.get("RESEND_FROM")
     if resend_key:
@@ -144,6 +170,20 @@ def _send_email(email: str, subject: str, content: str) -> None:
         server.starttls()
         server.login(current_app.config["SMTP_USERNAME"], current_app.config["SMTP_PASSWORD"])
         server.send_message(message)
+
+
+def _email_delivery_configured() -> bool:
+    """Return whether either supported transactional-email provider is ready."""
+    if current_app.config.get("GOOGLE_APPS_SCRIPT_URL") and current_app.config.get(
+        "GOOGLE_APPS_SCRIPT_TOKEN"
+    ):
+        return True
+    if current_app.config.get("RESEND_API_KEY") and current_app.config.get("RESEND_FROM"):
+        return True
+    return all(
+        current_app.config.get(item)
+        for item in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM")
+    )
 
 
 def _send_password_reset(email: str, token: str) -> bool:
@@ -227,7 +267,7 @@ def forgot_password():
     email = str(payload.get("email", "")).strip().lower()
     if not EMAIL_PATTERN.fullmatch(email):
         return jsonify({"error": "Enter a valid email address"}), 400
-    if not all(current_app.config.get(item) for item in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM")):
+    if not _email_delivery_configured():
         return jsonify({"error": "Password reset email is not configured on this server"}), 503
     user = database.local_user_by_email(email)
     if user is not None and user.password_hash:
