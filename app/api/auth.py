@@ -62,6 +62,7 @@ def _sign_in(user) -> None:
     session.clear()
     session.permanent = True
     session["user"] = _session_user(user)
+    AuditLogger().record("user_signed_in", "success", actor_email=user.email)
 
 
 def admin_required(view):
@@ -223,6 +224,7 @@ def register():
     if not current_app.config["EMAIL_VERIFICATION_REQUIRED"]:
         user = database.create_local_user(name, email, generate_password_hash(password))
         assert user is not None
+        AuditLogger().record("account_created", "success", actor_email=user.email)
         _sign_in(user)
         return jsonify({"authenticated": True, "user": _session_user(user)}), 201
     token = database.create_pending_registration(name, email, generate_password_hash(password))
@@ -241,6 +243,7 @@ def verify_email():
     user = database.consume_pending_registration(token)
     if user is None:
         return jsonify({"error": "This verification link is invalid, expired, or already used"}), 400
+    AuditLogger().record("account_created", "success", actor_email=user.email)
     _sign_in(user)
     return jsonify({"authenticated": True, "user": _session_user(user)}), 201
 
@@ -295,6 +298,7 @@ def reset_password():
     if user is None or user.id != reset_data.get("user_id"):
         return jsonify({"error": "This password reset link is invalid or has expired"}), 400
     database.update_password(user.id, generate_password_hash(password))
+    AuditLogger().record("password_reset", "success", actor_email=user.email)
     return jsonify({"message": "Password reset successfully. You can now sign in."})
 
 
@@ -312,6 +316,7 @@ def change_password():
     if not check_password_hash(user.password_hash, str(payload.get("current_password", ""))):
         return jsonify({"error": "Current password is incorrect"}), 401
     database.update_password(user.id, generate_password_hash(password))
+    AuditLogger().record("password_changed", "success", actor_email=user.email)
     return jsonify({"message": "Password updated successfully"})
 
 
@@ -335,7 +340,10 @@ def google_callback():
     if not profile or not profile.get("email_verified"):
         return jsonify({"error": "Google did not return a verified email address"}), 403
 
+    existing_user = database.local_user_by_email(profile["email"])
     user = database.upsert_google_user(profile)
+    if existing_user is None:
+        AuditLogger().record("account_created", "success", actor_email=user.email)
     _sign_in(user)
     # Tokens are intentionally not stored in the browser session; this project
     # only needs identity, not access to a user's Google resources.
@@ -372,9 +380,15 @@ def admin_users():
 @login_required
 @admin_required
 def admin_activity():
-    """Return the latest operational audit events for the admin dashboard."""
-    events = AuditLogger().list_events()
-    return jsonify({"events": [event.to_dict() for event in events[-50:][::-1]]})
+    """Return a page of operational audit events for the admin dashboard."""
+    limit = min(max(request.args.get("limit", default=12, type=int) or 12, 1), 100)
+    offset = max(request.args.get("offset", default=0, type=int) or 0, 0)
+    events = AuditLogger().list_events(limit=limit + 1, offset=offset, newest_first=True)
+    has_more = len(events) > limit
+    return jsonify({
+        "events": [event.to_dict() for event in events[:limit]],
+        "has_more": has_more,
+    })
 
 
 @auth_bp.route("/admin/users/<user_id>", methods=["DELETE"])
@@ -396,5 +410,8 @@ def admin_delete_user(user_id: str):
 @auth_bp.route("/logout", methods=["POST"])
 def logout():
     """End the local application session."""
+    user = session.get("user")
+    if user:
+        AuditLogger().record("user_signed_out", "success", actor_email=user.get("email"))
     session.clear()
     return jsonify({"authenticated": False})
