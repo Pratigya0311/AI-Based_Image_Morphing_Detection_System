@@ -1,3 +1,15 @@
+# Module: Audit Logging
+# Date Created: 2026-08-24 
+# Author: Singamaneni Nikhitha Vardhan
+# Synopsis: Records and retrieves audit events using the application database.
+# Functions (inputs -> outputs):
+# - AuditEvent.to_dict() -> Dict[str, Any].
+# - AuditLogger.record(event_type, outcome, event details) -> AuditEvent.
+# - AuditLogger.list_events(filters, limit, offset, newest_first) -> List[AuditEvent].
+# Module globals accessed/modified:
+# - database: shared database singleton used to persist and query audit events.
+# - No module-level global values are modified.
+
 """Audit persistence backed by the shared relational application database."""
 
 from __future__ import annotations
@@ -8,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
 from app.core.database import AuditEventRecord, Database, database
 
@@ -102,15 +114,23 @@ class AuditLogger:
         submission_id: Optional[str] = None,
         batch_id: Optional[str] = None,
         actor_email: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        newest_first: bool = False,
     ) -> list[AuditEvent]:
         """Return ordered events filtered by correlation fields."""
-        statement = select(AuditEventRecord).order_by(AuditEventRecord.timestamp.asc())
+        ordering = (desc(AuditEventRecord.timestamp), desc(AuditEventRecord.event_id)) if newest_first else (AuditEventRecord.timestamp.asc(), AuditEventRecord.event_id.asc())
+        statement = select(AuditEventRecord).order_by(*ordering)
         if submission_id:
             statement = statement.where(AuditEventRecord.submission_id == submission_id)
         if batch_id:
             statement = statement.where(AuditEventRecord.batch_id == batch_id)
         if actor_email:
             statement = statement.where(AuditEventRecord.actor_email == actor_email)
+        if offset > 0:
+            statement = statement.offset(offset)
+        if limit is not None:
+            statement = statement.limit(limit)
         with self.database.session() as session:
             records = list(session.scalars(statement))
         return [self._to_event(record) for record in records]
