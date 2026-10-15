@@ -1,3 +1,17 @@
+# Module: Feature Extraction
+# Date Created: 2026-08-24 
+# Author: Pratigya Vijay
+# Synopsis: Extracts 2048-dimensional ResNet-50 embeddings from preprocessed faces.
+# Functions (inputs -> outputs):
+# - ResNet50FeatureExtractor.validate_input(tensor) -> validated Tensor.
+# - ResNet50FeatureExtractor.extract(batch_tensor) -> embedding Tensor.
+# - ResNet50FeatureExtractor.extract_one(image_tensor) -> one embedding Tensor.
+# Module globals accessed/modified:
+# - INPUT_HEIGHT, INPUT_WIDTH, INPUT_CHANNELS: read for input shape validation.
+# - EMBEDDING_DIMENSION: read for output shape/model construction.
+# - IMAGENET_MEAN, IMAGENET_STD: read for model input normalization contract.
+# - These constants are not modified by the module.
+
 """ResNet-50 feature extraction for preprocessed facial images.
 
 The module contract with preprocessing is a float32 RGB tensor of shape

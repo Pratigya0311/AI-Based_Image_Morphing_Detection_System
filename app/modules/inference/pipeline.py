@@ -1,3 +1,14 @@
+# Module: Morph Detection Inference Pipeline
+# Date Created: 2026-08-24 
+# Author: Singamaneni Nikhitha Vardhan
+# Synopsis: Coordinates face preprocessing, feature extraction, and morph prediction.
+# Functions (inputs -> outputs):
+# - MorphAnalysisPipeline.analyze(id, preprocessed_tensor, image_url) -> AnalysisResult.
+# - MorphAnalysisPipeline.analyze_image(id, image_bytes, image_url) -> AnalysisResult.
+# Module globals accessed/modified:
+# - DEFAULT_CHECKPOINT_PATH: read as the default classifier checkpoint location.
+# - No module-level global values are modified.
+
 """The Module 3 → Module 4 → Module 5 morph-analysis handoff."""
 
 from __future__ import annotations

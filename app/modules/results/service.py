@@ -1,3 +1,20 @@
+# Module: Result Preparation
+# Date Created: 2026-08-24 
+# Author: Pratigya Vijay
+# Modification History:
+# - 2026-10-15: Added standardized module documentation header.
+# - 2026-10-15: Documented public interfaces and module-level globals.
+# Synopsis: Converts model outputs into confidence-scored results for the dashboard.
+# Functions (inputs -> outputs):
+# - ConfidenceScorer.score(probabilities) -> (predicted_label, confidence, probabilities).
+# - ResultService.create_result(submission_id, probabilities, image_url) -> AnalysisResult.
+# - AnalysisResult.to_dict() -> Dict[str, Any].
+# - AnalysisResult.confidence_percentage -> float; presentation_status -> str.
+# Module globals accessed/modified:
+# - GENUINE_LABEL and MORPHED_LABEL: read as the supported prediction labels.
+# - CLASS_LABELS: read for probability validation and prediction selection.
+# - These constants are not modified by the module.
+
 """Confidence scoring and dashboard-ready presentation of morph predictions."""
 
 from __future__ import annotations

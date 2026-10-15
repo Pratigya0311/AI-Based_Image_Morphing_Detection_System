@@ -1,3 +1,16 @@
+# Module: Face Preprocessing
+# Date Created: 2026-08-24 
+# Author: Pappuru Nikhitha
+# Synopsis: Detects, validates, aligns, and prepares faces for feature extraction.
+# Functions (inputs -> outputs):
+# - HaarFaceDetector.detect(image_array) -> Sequence[FaceBoundingBox].
+# - LBFLandmarkDetector.detect(image_array, face_box) -> two eye coordinates.
+# - FacePreprocessor.process(submission_id, image_bytes) -> PreprocessedFace.
+# - FacePreprocessor.sharpness_score(image_array) -> float.
+# Module globals accessed/modified:
+# - INPUT_HEIGHT, INPUT_WIDTH, IMAGENET_MEAN, IMAGENET_STD: read for output shape
+#   and normalization; imported constants are not modified.
+
 """Face detection, eye alignment, and ResNet-50-ready preprocessing."""
 
 from __future__ import annotations

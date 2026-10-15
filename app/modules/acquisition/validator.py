@@ -1,3 +1,24 @@
+# Module: Image Acquisition and Validation
+# Date Created: 2026-08-24 
+# Author: Pratigya Vijay
+# Synopsis: Validates uploaded images and manages their submission metadata.
+# Functions (inputs -> outputs):
+# - ImageValidator.validate_size(bytes) -> (is_valid, optional error).
+# - ImageValidator.get_image_format(bytes) -> format name.
+# - ImageValidator.validate_format(bytes, filename) -> (is_valid, optional error).
+# - ImageValidator.validate_image(bytes, filename) -> (is_valid, error_message).
+# - SubmissionManager.generate_submission_id() -> str; compute_file_hash(bytes) -> SHA-256 hex.
+# - SubmissionManager.record_submission(metadata) -> SubmissionMetadata.
+# - SubmissionManager.create_submission(bytes, filename) -> SubmissionMetadata.
+# - SubmissionManager.get_submission(id) -> Optional[SubmissionMetadata].
+# - SubmissionManager.get_all_submissions() -> Dict[id, SubmissionMetadata].
+# - SubmissionManager.update_validation_status(id, status, error) -> optional metadata Dict.
+# - ImageAcquisition.process_image(bytes, filename) -> validation/result Dict.
+# - ImageAcquisition.get_submission_status(id) -> Optional[metadata Dict].
+# Module globals accessed/modified:
+# - SUPPORTED_FORMATS: read by ImageValidator; not modified.
+# - MAX_FILE_SIZE: read as ImageValidator's default size limit; not modified.
+
 """Image acquisition, validation, and submission-metadata management."""
 
 import hashlib

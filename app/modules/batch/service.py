@@ -1,3 +1,16 @@
+# Module: Batch Processing and Reporting
+# Date Created: 2026-08-24
+# Author: Pappuru Nikhitha
+# Synopsis: Processes image batches and creates PDF reports for the results.
+# Functions (inputs -> outputs):
+# - BatchProcessor.process(images, generate_report) -> BatchResult.
+# - PdfReportGenerator.generate(batch_result, output_path) -> Path.
+# - BatchItemResult.to_dict() -> Dict[str, Any]; succeeded -> bool.
+# - BatchResult.to_dict() -> Dict[str, Any].
+# - BatchResult.successful_count and failed_count -> int.
+# Module globals accessed/modified:
+# - No module-level global variables or constants are accessed or modified.
+
 """Batch orchestration and PDF reporting for completed morph analyses."""
 
 from __future__ import annotations
