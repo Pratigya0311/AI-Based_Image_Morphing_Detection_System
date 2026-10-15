@@ -15,6 +15,8 @@ let batchFiles: File[] = []
 let adminAuthorized = false
 let adminDashboardLoaded = false
 let adminDashboardLoading = false
+let adminActivityPoll: number | undefined
+let refreshAdminActivity: (() => Promise<void>) | null = null
 
 const allowedTypes = ['image/jpeg', 'image/png', 'image/bmp']
 
@@ -27,6 +29,33 @@ function validFiles(files: File[]) {
 function size(bytes: number) { return bytes > 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${(bytes / 1024).toFixed(1)} KB` }
 function showToast(message: string) { const toast = document.querySelector<HTMLElement>('#toast')!; toast.textContent = message; toast.classList.remove('hidden'); setTimeout(() => toast.classList.add('hidden'), 4300) }
 function setButtonLoading(button: HTMLButtonElement, label: string, loading: boolean) { button.disabled = loading; button.innerHTML = loading ? `<i class="spinner"></i> ${label}` : label }
+
+function addPasswordVisibilityToggles(root: ParentNode) {
+  root.querySelectorAll<HTMLInputElement>('input[type="password"]:not([data-visibility-toggle])').forEach(input => {
+    input.dataset.visibilityToggle = 'true'
+    const field = document.createElement('span')
+    field.className = 'password-field'
+    input.parentNode!.insertBefore(field, input)
+    field.append(input)
+    const button = document.createElement('button')
+    button.className = 'password-toggle'
+    button.type = 'button'
+    button.setAttribute('aria-label', 'Show password')
+    button.title = 'Show password'
+    button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>'
+    button.addEventListener('click', () => {
+      const show = input.type === 'password'
+      input.type = show ? 'text' : 'password'
+      const label = `${show ? 'Hide' : 'Show'} ${input.placeholder?.toLowerCase().includes('password') ? input.placeholder : 'password'}`
+      button.setAttribute('aria-label', label)
+      button.title = label
+      button.innerHTML = show
+        ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 5.2A10.8 10.8 0 0 1 12 5c6.4 0 10 7 10 7a15 15 0 0 1-3.1 3.8M6.2 6.2C3.5 8 2 12 2 12s3.6 7 10 7a10 10 0 0 0 4-.8"/></svg>'
+        : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>'
+    })
+    field.append(button)
+  })
+}
 
 function analysisFailure(error: unknown) {
   const message = error instanceof Error ? error.message.toLowerCase() : ''
@@ -53,9 +82,63 @@ async function showAdminDashboard(force = false) {
   try {
     const [usersResponse, activityResponse] = await Promise.all([api.adminUsers(), api.adminActivity()])
     const users = usersResponse.users.map(user => `<tr><td>${escapeHtml(user.name)}</td><td>${escapeHtml(user.email)}</td><td>${escapeHtml(user.role)}</td><td>${new Date(user.last_signed_in_at).toLocaleString()}</td><td>${user.role === 'admin' ? 'Protected' : `<button class="remove-user" data-user-id="${user.id}">Remove</button>`}</td></tr>`).join('')
-    const activity = activityResponse.events.slice(0, 12).map(event => `<li><strong>${escapeHtml(event.event_type.replaceAll('_', ' '))}</strong><span>${escapeHtml(event.actor_email ?? 'System')} · ${new Date(event.timestamp).toLocaleString()}</span></li>`).join('') || '<li><span>No activity recorded yet.</span></li>'
-    root.innerHTML = `<section class="admin-page"><header><div><p class="eyebrow">ADMINISTRATOR AREA</p><h1>System administration</h1><p>Manage registered users and review recent protected activity.</p></div></header><section class="admin-grid"><article><h2>Registered users <span>${usersResponse.users.length}</span></h2><div class="admin-table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last sign-in</th><th>Action</th></tr></thead><tbody>${users}</tbody></table></div></article><article><h2>Recent activity</h2><ol class="admin-activity">${activity}</ol></article></section></section>`
+    const activityPageSize = 12
+    let activityEvents = activityResponse.events
+    let activityHasMore = activityResponse.has_more
+    let activityOffset = activityEvents.length
+    let activityRefreshInFlight = false
+    const renderActivity = () => activityEvents.map(event => {
+      const details = [
+        event.prediction ? `Prediction: ${event.prediction}` : '',
+        event.submission_id ? `Submission: ${event.submission_id}` : '',
+        event.batch_id ? `Batch: ${event.batch_id}` : '',
+        event.error_message ? `Error: ${event.error_message}` : '',
+      ].filter(Boolean).map(escapeHtml).join(' · ')
+      return `<li><strong>${escapeHtml(event.event_type.replaceAll('_', ' '))} <em>${escapeHtml(event.outcome)}</em></strong><span>${escapeHtml(event.actor_email ?? 'System')} · ${new Date(event.timestamp).toLocaleString()}</span>${details ? `<small>${details}</small>` : ''}</li>`
+    }).join('') || '<li><span>No activity recorded yet.</span></li>'
+    root.innerHTML = `<section class="admin-page"><header><div><p class="eyebrow">ADMINISTRATOR AREA</p><h1>System administration</h1><p>Manage registered users and review recent protected activity.</p></div></header><section class="admin-grid"><article><h2>Registered users <span>${usersResponse.users.length}</span></h2><div class="admin-table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last sign-in</th><th>Action</th></tr></thead><tbody>${users}</tbody></table></div></article><article><h2>Activity logs</h2><ol class="admin-activity">${renderActivity()}</ol><button class="button admin-view-more${activityHasMore ? '' : ' hidden'}" id="admin-view-more">View more</button></article></section></section>`
     adminDashboardLoaded = true
+    const viewMoreButton = root.querySelector<HTMLButtonElement>('#admin-view-more')!
+    const bindViewMore = () => viewMoreButton.addEventListener('click', async () => {
+      if (!activityHasMore) return
+      viewMoreButton.disabled = true
+      viewMoreButton.textContent = 'Loading…'
+      try {
+        const nextPage = await api.adminActivity(activityOffset, activityPageSize)
+        activityEvents = [...activityEvents, ...nextPage.events]
+        activityOffset += nextPage.events.length
+        activityHasMore = nextPage.has_more
+        root.querySelector<HTMLOListElement>('.admin-activity')!.innerHTML = renderActivity()
+        if (!activityHasMore) viewMoreButton.classList.add('hidden')
+        else { viewMoreButton.disabled = false; viewMoreButton.textContent = 'View more' }
+      } catch (error) {
+        viewMoreButton.disabled = false
+        viewMoreButton.textContent = 'View more'
+        showToast(error instanceof Error ? error.message : 'Unable to load more activity logs.')
+      }
+    })
+    bindViewMore()
+    refreshAdminActivity = async () => {
+      if (activityRefreshInFlight || !root.querySelector('.admin-activity')) return
+      activityRefreshInFlight = true
+      try {
+        const latest = await api.adminActivity(0, activityPageSize)
+        const knownIds = new Set(activityEvents.map(event => event.event_id).filter(Boolean))
+        const newEvents = latest.events.filter(event => event.event_id && !knownIds.has(event.event_id))
+        if (newEvents.length) {
+          activityEvents = [...newEvents, ...activityEvents]
+          activityOffset += newEvents.length
+          root.querySelector<HTMLOListElement>('.admin-activity')!.innerHTML = renderActivity()
+        }
+        activityHasMore = activityHasMore || latest.has_more
+        viewMoreButton.classList.toggle('hidden', !activityHasMore)
+      } catch {
+        // Keep the current logs visible; the next polling cycle will retry.
+      } finally {
+        activityRefreshInFlight = false
+      }
+    }
+    startAdminActivityPolling()
     root.querySelectorAll<HTMLButtonElement>('.remove-user').forEach(button => button.addEventListener('click', async () => {
       if (!window.confirm('Remove this user and their analysis history permanently?')) return
       try { await api.deleteUser(button.dataset.userId!); adminDashboardLoaded = false; await showAdminDashboard(true) } catch (error) { window.alert(error instanceof Error ? error.message : 'Unable to remove user') }
@@ -168,12 +251,26 @@ function routeWorkspace() {
   document.querySelectorAll<HTMLAnchorElement>('[data-page]').forEach(link => link.classList.toggle('active', link.dataset.page === route))
   document.querySelector('#admin-nav-link')?.classList.toggle('active', isAdminRoute)
   if (isAdminRoute) {
+    if (adminDashboardLoaded) startAdminActivityPolling()
     if (!adminDashboardLoaded) void showAdminDashboard()
     window.scrollTo({ top: 0, behavior: 'auto' })
     return
   }
+  stopAdminActivityPolling()
   if (requestedRoute === 'how') window.setTimeout(() => document.querySelector('#how')?.scrollIntoView({ behavior: 'smooth' }), 0)
   else window.scrollTo({ top: 0, behavior: 'auto' })
+}
+
+function startAdminActivityPolling() {
+  if (adminActivityPoll !== undefined) window.clearInterval(adminActivityPoll)
+  adminActivityPoll = window.setInterval(() => {
+    if (window.location.hash === '#admin' && !document.hidden) void refreshAdminActivity?.()
+  }, 4000)
+}
+
+function stopAdminActivityPolling() {
+  if (adminActivityPoll !== undefined) window.clearInterval(adminActivityPoll)
+  adminActivityPoll = undefined
 }
 
 window.addEventListener('hashchange', routeWorkspace)
@@ -188,6 +285,7 @@ void api.profile().then(profile => {
   const menu = document.querySelector<HTMLElement>('#account-menu')!
   const lastSignedIn = profile.user.last_signed_in_at ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(profile.user.last_signed_in_at)) : 'Not available'
   menu.innerHTML = `<div class="account-info"><strong>${escapeHtml(profile.user.name)}</strong><span>${escapeHtml(profile.user.email)}</span><small>Last signed in: ${escapeHtml(lastSignedIn)}</small></div><div class="account-stats"><div><strong>${profile.stats.images_analyzed}</strong><span>Images analyzed</span></div><div><strong>${profile.stats.batches_created}</strong><span>Batches created</span></div><div><strong>${profile.stats.morphed_flags}</strong><span>Morph flags</span></div></div>${profile.user.role === 'admin' ? '<button class="account-secondary" id="admin-dashboard-button">Admin dashboard</button>' : ''}${profile.user.has_password ? '<button class="account-secondary" id="change-password-button">Change password</button><form class="account-password hidden" id="change-password-form"><input name="current_password" type="password" placeholder="Current password" required><input name="new_password" type="password" placeholder="New password (8+ characters)" minlength="8" required><button type="submit">Update password</button></form>' : '<p class="account-provider">Signed in with Google</p>'}<button id="logout-button">Sign out</button>`
+  addPasswordVisibilityToggles(menu)
   if (profile.user.role === 'admin') {
     adminAuthorized = true
     const navigation = document.querySelector<HTMLElement>('.nav nav')!
@@ -207,12 +305,15 @@ void api.profile().then(profile => {
   const verifyToken = new URLSearchParams(window.location.search).get('verify_token') ?? ''
   if (verifyToken) {
     app.innerHTML = loginTemplate('Verifying your email address...')
+    addPasswordVisibilityToggles(app)
     void api.verifyEmail(verifyToken).then(() => { window.history.replaceState({}, '', window.location.pathname); window.location.reload() }).catch(error => {
       app.innerHTML = loginTemplate(error instanceof Error ? error.message : 'Unable to verify this email link.')
+      addPasswordVisibilityToggles(app)
     })
     return
   }
   app.innerHTML = loginTemplate('', resetToken)
+  addPasswordVisibilityToggles(app)
   const message = document.querySelector<HTMLElement>('#auth-message')!
   const showMessage = (value: string, error = true) => { message.textContent = value; message.classList.toggle('error', error) }
   const formValue = (form: HTMLFormElement, name: string) => String(new FormData(form).get(name) ?? '')

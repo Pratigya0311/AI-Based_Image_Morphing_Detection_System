@@ -20,7 +20,7 @@ export const api = {
   verifyEmail: (token: string) => request<{ authenticated: boolean }>('/api/auth/verify-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) }),
   changePassword: (currentPassword: string, newPassword: string) => request<{ message: string }>('/api/auth/change-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }),
   adminUsers: () => request<{ users: Array<{ id: string; name: string; email: string; role: string; created_at: string; last_signed_in_at: string }> }>('/api/auth/admin/users'),
-  adminActivity: () => request<{ events: AuditEvent[] }>('/api/auth/admin/activity'),
+  adminActivity: (offset = 0, limit = 12) => request<{ events: AuditEvent[]; has_more: boolean }>(`/api/auth/admin/activity?offset=${offset}&limit=${limit}`),
   deleteUser: (id: string) => request<{ message: string }>(`/api/auth/admin/users/${id}`, { method: 'DELETE' }),
   logout: () => request<{ authenticated: boolean }>('/api/auth/logout', { method: 'POST' }),
   health: () => request<{ status: string }>('/api/analysis/health'),
